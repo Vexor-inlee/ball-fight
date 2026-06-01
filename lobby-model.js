@@ -21,6 +21,7 @@ export function createRoom({ title, password, host }) {
     hostId: host.id,
     createdAt: Date.now(),
     players: [{ ...host, role: 'blue', ready: true }],
+    gameState: null,
   };
 }
 
@@ -36,7 +37,7 @@ export function joinRoom(room, player, password) {
   }
   return {
     ...room,
-    players: [...room.players, { ...player, role: 'red', ready: false }],
+    players: [...room.players, { ...player, role: 'red', ready: player.ready ?? false }],
   };
 }
 
@@ -45,4 +46,64 @@ export function leaveRoom(room, playerId) {
   const players = room.players.filter(player => player.id !== playerId);
   if (!players.length) return null;
   return { ...room, players };
+}
+
+export function setPlayerReady(room, playerId, ready) {
+  return {
+    ...room,
+    players: room.players.map(player => (
+      player.id === playerId ? { ...player, ready } : player
+    )),
+  };
+}
+
+export function startRoom(room, gameState) {
+  return {
+    ...room,
+    status: 'playing',
+    gameState,
+  };
+}
+
+export function updatePlayerGameState(room, role, ballState) {
+  return {
+    ...room,
+    gameState: {
+      ...(room.gameState || {}),
+      [role]: {
+        ...((room.gameState || {})[role] || {}),
+        ...ballState,
+      },
+    },
+  };
+}
+
+export function roomToRow(room) {
+  return {
+    id: room.id,
+    code: room.code,
+    title: room.title,
+    password: room.password,
+    has_password: room.hasPassword,
+    status: room.status,
+    host_id: room.hostId,
+    created_at: room.createdAt,
+    players: room.players,
+    game_state: room.gameState,
+  };
+}
+
+export function roomFromRow(row) {
+  return {
+    id: row.id,
+    code: row.code,
+    title: row.title,
+    password: row.password,
+    hasPassword: row.has_password,
+    status: row.status,
+    hostId: row.host_id,
+    createdAt: row.created_at,
+    players: row.players || [],
+    gameState: row.game_state || null,
+  };
 }

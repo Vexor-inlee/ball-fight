@@ -322,6 +322,7 @@
           <div class="buttons">
             <button id="joinByCodeBtn" type="button">코드로 입장</button>
             <button id="logoutBtn" class="secondary" type="button">닉네임 변경</button>
+            <button id="clearLocalRoomsBtn" class="secondary" type="button">로컬 방 초기화</button>
           </div>
           <div id="lobbyStatus" class="status-small"></div>
         </div>
@@ -345,6 +346,7 @@
           <p class="muted">두 명이 입장하면 방장이 게임을 시작할 수 있습니다. 서버 연결 전 MVP라서 로컬 테스트 상대를 추가할 수 있습니다.</p>
           <div class="buttons">
             <button id="addLocalGuestBtn" class="secondary" type="button">로컬 테스트 상대 추가</button>
+            <button id="readyBtn" class="secondary" type="button">Ready</button>
             <button id="startRoomGameBtn" type="button">게임 시작</button>
             <button id="leaveRoomBtn" class="danger" type="button">방 나가기</button>
           </div>
@@ -406,7 +408,12 @@
       createRoom,
       joinRoom,
       leaveRoom as leaveRoomModel,
+      roomFromRow,
+      roomToRow,
       sanitizeNickname,
+      setPlayerReady,
+      startRoom,
+      updatePlayerGameState,
     } from './lobby-model.js';
 
     const TOTAL_ROUNDS = 10;
@@ -415,6 +422,8 @@
     const PLAYER_STORAGE_KEY = 'ballfight.player';
     const ROOMS_STORAGE_KEY = 'ballfight.rooms';
     const ROOM_SYNC_CHANNEL = 'ballfight.rooms.sync';
+    const SUPABASE_URL = '';
+    const SUPABASE_ANON_KEY = '';
     const roomSync = 'BroadcastChannel' in window ? new BroadcastChannel(ROOM_SYNC_CHANNEL) : null;
 
     const screens = {
@@ -433,12 +442,14 @@
     const joinCodeInput = document.getElementById('joinCodeInput');
     const joinPasswordInput = document.getElementById('joinPasswordInput');
     const joinByCodeBtn = document.getElementById('joinByCodeBtn');
+    const clearLocalRoomsBtn = document.getElementById('clearLocalRoomsBtn');
     const lobbyStatus = document.getElementById('lobbyStatus');
     const roomList = document.getElementById('roomList');
     const roomTitleText = document.getElementById('roomTitleText');
     const roomMetaText = document.getElementById('roomMetaText');
     const playerList = document.getElementById('playerList');
     const addLocalGuestBtn = document.getElementById('addLocalGuestBtn');
+    const readyBtn = document.getElementById('readyBtn');
     const startRoomGameBtn = document.getElementById('startRoomGameBtn');
     const leaveRoomBtn = document.getElementById('leaveRoomBtn');
     const backToRoomBtn = document.getElementById('backToRoomBtn');
@@ -488,6 +499,19 @@
     let roundAdvanceTimeout = null;
     let audioContext = null;
     let lastWallSoundAt = 0;
+    let supabase = null;
+    let remoteRooms = [];
+    let remoteRoomsEnabled = false;
+    let remoteRoomsReady = false;
+    let roomsChannel = null;
+    let activeGameRoomId = null;
+    let lastGameStatePublishAt = 0;
+    let lastLocalGameFetchAt = 0;
+    let localApiRoomsEnabled = false;
+    let localApiStreamConnected = false;
+    let localApiEvents = null;
+    let localApiSocket = null;
+    let localApiSocketConnected = false;
 
     const BASE_RADIUS = 22;
     const BASE_ACCEL = 780;
@@ -523,6 +547,7 @@
     }
 
     function loadRooms() {
+      if (remoteRoomsEnabled || localApiRoomsEnabled) return remoteRooms;
       try {
         return JSON.parse(localStorage.getItem(ROOMS_STORAGE_KEY)) || [];
       } catch {
@@ -531,14 +556,212 @@
     }
 
     function saveRooms(rooms) {
+      if (remoteRoomsEnabled || localApiRoomsEnabled) {
+        remoteRooms = rooms;
+        refreshRoomViews();
+        return;
+      }
       localStorage.setItem(ROOMS_STORAGE_KEY, JSON.stringify(rooms));
       roomSync?.postMessage({ type: 'rooms-updated' });
       refreshRoomViews();
     }
 
+    async function initializeRoomBackend() {
+      if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+        await initializeLocalApiBackend();
+        return;
+      }
+      try {
+        const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm');
+        supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        remoteRoomsEnabled = true;
+        await refreshRemoteRooms();
+        roomsChannel = supabase
+          .channel('public:rooms')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, refreshRemoteRooms)
+          .subscribe();
+        lobbyStatus.textContent = '온라인 방 목록에 연결되었습니다.';
+      } catch (error) {
+        remoteRoomsEnabled = false;
+        lobbyStatus.textContent = `온라인 방 목록 연결 실패: ${error.message}`;
+      } finally {
+        remoteRoomsReady = true;
+      }
+    }
+
+    async function initializeLocalApiBackend() {
+      try {
+        const response = await fetch('/api/rooms', { cache: 'no-store' });
+        if (!response.ok) throw new Error('local room API unavailable');
+        remoteRooms = await response.json();
+        localApiRoomsEnabled = true;
+        connectLocalApiEvents();
+        connectLocalApiSocket();
+        lobbyStatus.textContent = '로컬 멀티 서버에 연결되었습니다. Safari 일반/시크릿과 다른 브라우저 탭이 같은 방 목록을 봅니다.';
+        refreshRoomViews();
+      } catch {
+        localApiRoomsEnabled = false;
+        lobbyStatus.textContent = '브라우저 저장소 모드입니다. Safari 일반/시크릿은 서로 방 목록을 공유하지 않습니다. 로컬 멀티 테스트는 node local-multiplayer-server.mjs로 실행하세요.';
+      } finally {
+        remoteRoomsReady = true;
+      }
+    }
+
+    async function refreshLocalApiRooms() {
+      if (!localApiRoomsEnabled) return;
+      const response = await fetch('/api/rooms', { cache: 'no-store' });
+      if (!response.ok) return;
+      remoteRooms = await response.json();
+      refreshRoomViews();
+    }
+
+    function connectLocalApiEvents() {
+      if (!('EventSource' in window) || localApiEvents) return;
+      localApiEvents = new EventSource('/api/rooms/events');
+      localApiEvents.onopen = () => {
+        localApiStreamConnected = true;
+      };
+      localApiEvents.onmessage = (event) => {
+        localApiStreamConnected = true;
+        remoteRooms = JSON.parse(event.data);
+        refreshRoomViews();
+      };
+      localApiEvents.onerror = () => {
+        localApiStreamConnected = false;
+      };
+    }
+
+    function sendLocalApiSocketMessage(message) {
+      if (!localApiSocketConnected || !localApiSocket || localApiSocket.readyState !== WebSocket.OPEN) return false;
+      localApiSocket.send(JSON.stringify(message));
+      return true;
+    }
+
+    function connectLocalApiSocket() {
+      if (!('WebSocket' in window) || localApiSocket) return;
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      localApiSocket = new WebSocket(`${protocol}://${location.host}/ws`);
+      localApiSocket.addEventListener('open', () => {
+        localApiSocketConnected = true;
+      });
+      localApiSocket.addEventListener('message', (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type !== 'rooms') return;
+        remoteRooms = message.rooms;
+        refreshRoomViews();
+      });
+      localApiSocket.addEventListener('close', () => {
+        localApiSocketConnected = false;
+        localApiSocket = null;
+      });
+      localApiSocket.addEventListener('error', () => {
+        localApiSocketConnected = false;
+      });
+    }
+
+    async function refreshRemoteRooms() {
+      if (!supabase) return;
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) {
+        lobbyStatus.textContent = `방 목록 불러오기 실패: ${error.message}`;
+        return;
+      }
+      remoteRooms = (data || []).map(roomFromRow);
+      refreshRoomViews();
+    }
+
+    async function persistCreatedRoom(room) {
+      if (localApiRoomsEnabled) {
+        remoteRooms = [room, ...loadRooms()];
+        refreshRoomViews();
+        if (sendLocalApiSocketMessage({ type: 'upsert-room', room })) return true;
+        const response = await fetch('/api/rooms', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(room),
+        });
+        if (!response.ok) {
+          lobbyStatus.textContent = '로컬 서버에 방 생성 요청이 실패했습니다.';
+          return false;
+        }
+        return true;
+      }
+      if (!remoteRoomsEnabled) {
+        saveRooms([room, ...loadRooms()]);
+        return true;
+      }
+      const { error } = await supabase.from('rooms').insert(roomToRow(room));
+      if (error) {
+        lobbyStatus.textContent = `방 생성 실패: ${error.message}`;
+        return false;
+      }
+      await refreshRemoteRooms();
+      return true;
+    }
+
+    async function persistUpdatedRoom(room) {
+      if (localApiRoomsEnabled) {
+        remoteRooms = loadRooms().map(candidate => candidate.id === room.id ? room : candidate);
+        refreshRoomViews();
+        if (sendLocalApiSocketMessage({ type: 'upsert-room', room })) return true;
+        const response = await fetch(`/api/rooms/${encodeURIComponent(room.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(room),
+        });
+        if (!response.ok) {
+          roomStatus.textContent = '로컬 서버에 방 업데이트 요청이 실패했습니다.';
+          return false;
+        }
+        return true;
+      }
+      if (!remoteRoomsEnabled) {
+        updateRoom(room);
+        return true;
+      }
+      const { error } = await supabase.from('rooms').update(roomToRow(room)).eq('id', room.id);
+      if (error) {
+        lobbyStatus.textContent = `방 업데이트 실패: ${error.message}`;
+        roomStatus.textContent = error.message;
+        return false;
+      }
+      await refreshRemoteRooms();
+      return true;
+    }
+
+    async function persistDeletedRoom(roomId) {
+      if (localApiRoomsEnabled) {
+        remoteRooms = loadRooms().filter(room => room.id !== roomId);
+        refreshRoomViews();
+        if (sendLocalApiSocketMessage({ type: 'delete-room', roomId })) return true;
+        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE' });
+        if (!response.ok) {
+          roomStatus.textContent = '로컬 서버에 방 삭제 요청이 실패했습니다.';
+          return false;
+        }
+        return true;
+      }
+      if (!remoteRoomsEnabled) {
+        saveRooms(loadRooms().filter(room => room.id !== roomId));
+        return true;
+      }
+      const { error } = await supabase.from('rooms').delete().eq('id', roomId);
+      if (error) {
+        lobbyStatus.textContent = `방 삭제 실패: ${error.message}`;
+        roomStatus.textContent = error.message;
+        return false;
+      }
+      await refreshRemoteRooms();
+      return true;
+    }
+
     function refreshRoomViews() {
       if (screens.lobby.classList.contains('active')) renderLobby();
       if (screens.room.classList.contains('active')) renderRoom();
+      if (screens.game.classList.contains('active')) syncRemoteGameState();
     }
 
     function showScreen(name) {
@@ -554,6 +777,11 @@
 
     function getCurrentRoom() {
       return loadRooms().find(room => room.id === currentRoomId) || null;
+    }
+
+    function getCurrentPlayerRole(room = getCurrentRoom()) {
+      if (!room || !currentPlayer) return null;
+      return room.players.find(player => player.id === currentPlayer.id)?.role || null;
     }
 
     function updateRoom(nextRoom) {
@@ -667,9 +895,27 @@
         `;
         playerList.appendChild(card);
       }
-      startRoomGameBtn.disabled = room.players.length < 2;
+      if (room.status === 'playing') {
+        roomStatus.textContent = '게임이 시작되었습니다. 게임 화면으로 이동합니다.';
+        enterStartedGameFromRoom(room);
+        return;
+      }
+      const localPlayer = room.players.find(player => player.id === currentPlayer?.id);
+      const isHost = room.hostId === currentPlayer?.id;
+      const everyoneReady = room.players.length === 2 && room.players.every(player => player.ready);
+      readyBtn.disabled = !localPlayer;
+      readyBtn.textContent = localPlayer?.ready ? 'Ready 완료' : 'Ready';
+      startRoomGameBtn.disabled = !isHost || !everyoneReady;
       addLocalGuestBtn.disabled = room.players.length >= 2;
-      roomStatus.textContent = room.players.length < 2 ? '상대가 들어오면 게임을 시작할 수 있습니다.' : '게임 시작 준비 완료';
+      if (room.players.length < 2) {
+        roomStatus.textContent = '상대가 들어오면 Ready 후 게임을 시작할 수 있습니다.';
+      } else if (!isHost) {
+        roomStatus.textContent = localPlayer?.ready ? '방장이 게임을 시작할 때까지 기다리는 중입니다.' : 'Ready를 누르면 준비 완료됩니다.';
+      } else if (!everyoneReady) {
+        roomStatus.textContent = '두 플레이어가 모두 Ready 상태여야 시작할 수 있습니다.';
+      } else {
+        roomStatus.textContent = '모두 Ready 완료. 게임을 시작할 수 있습니다.';
+      }
     }
 
     function enterLobby() {
@@ -682,23 +928,24 @@
       showScreen('lobby');
     }
 
-    function createNewRoom() {
+    async function createNewRoom() {
       if (!currentPlayer) return;
       const room = createRoom({
         title: roomTitleInput.value,
         password: roomPasswordInput.value,
         host: currentPlayer,
       });
-      const rooms = loadRooms();
-      saveRooms([room, ...rooms]);
+      const saved = await persistCreatedRoom(room);
+      if (!saved) return;
       currentRoomId = room.id;
       roomTitleInput.value = '';
       roomPasswordInput.value = '';
       showScreen('room');
     }
 
-    function joinRoomByCode() {
+    async function joinRoomByCode() {
       if (!currentPlayer) return;
+      if (remoteRoomsEnabled) await refreshRemoteRooms();
       const code = joinCodeInput.value.trim().toUpperCase();
       const rooms = loadRooms();
       const room = rooms.find(candidate => candidate.code === code);
@@ -708,7 +955,8 @@
       }
       try {
         const nextRoom = joinRoom(room, currentPlayer, joinPasswordInput.value);
-        saveRooms(rooms.map(candidate => candidate.id === room.id ? nextRoom : candidate));
+        const saved = await persistUpdatedRoom(nextRoom);
+        if (!saved) return;
         currentRoomId = nextRoom.id;
         joinCodeInput.value = '';
         joinPasswordInput.value = '';
@@ -719,7 +967,23 @@
       }
     }
 
-    function addLocalGuest() {
+    function clearLocalRooms() {
+      if (remoteRoomsEnabled) {
+        lobbyStatus.textContent = '온라인 모드에서는 Supabase 방 데이터가 공유됩니다. 로컬 초기화는 사용하지 않습니다.';
+        return;
+      }
+      if (localApiRoomsEnabled) {
+        lobbyStatus.textContent = '로컬 멀티 서버 모드에서는 서버를 재시작하면 방 목록이 초기화됩니다.';
+        return;
+      }
+      localStorage.removeItem(ROOMS_STORAGE_KEY);
+      currentRoomId = null;
+      roomSync?.postMessage({ type: 'rooms-updated' });
+      refreshRoomViews();
+      lobbyStatus.textContent = '이 브라우저에 저장된 로컬 방 목록을 초기화했습니다.';
+    }
+
+    async function addLocalGuest() {
       const room = getCurrentRoom();
       if (!room) return;
       const hostScheme = room.players[0]?.controlScheme || 'wasd';
@@ -727,23 +991,31 @@
         id: `local-${crypto.randomUUID()}`,
         nickname: `${currentPlayer.nickname} 상대`,
         controlScheme: hostScheme === 'wasd' ? 'arrows' : 'wasd',
+        ready: true,
       };
       try {
-        updateRoom(joinRoom(room, guest, room.password));
+        await persistUpdatedRoom(joinRoom(room, guest, room.password));
       } catch (error) {
         roomStatus.textContent = error.message;
       }
     }
 
-    function leaveRoom() {
+    async function toggleReady() {
+      const room = getCurrentRoom();
+      if (!room || !currentPlayer) return;
+      const player = room.players.find(candidate => candidate.id === currentPlayer.id);
+      if (!player) return;
+      await persistUpdatedRoom(setPlayerReady(room, currentPlayer.id, !player.ready));
+    }
+
+    async function leaveRoom() {
       const room = getCurrentRoom();
       if (room && currentPlayer) {
         const nextRoom = leaveRoomModel(room, currentPlayer.id);
-        const rooms = loadRooms();
-        saveRooms(nextRoom
-          ? rooms.map(candidate => candidate.id === room.id ? nextRoom : candidate)
-          : rooms.filter(candidate => candidate.id !== room.id)
-        );
+        const saved = nextRoom
+          ? await persistUpdatedRoom(nextRoom)
+          : await persistDeletedRoom(room.id);
+        if (!saved) return;
       }
       currentRoomId = null;
       showScreen('lobby');
@@ -777,6 +1049,143 @@
       redPlayerName = red?.nickname || '빨간공';
       blueControlScheme = blue?.controlScheme || 'wasd';
       redControlScheme = red?.controlScheme || 'arrows';
+    }
+
+    function captureBallState(ball) {
+      return {
+        x: ball.x,
+        y: ball.y,
+        vx: ball.vx,
+        vy: ball.vy,
+        holdTime: ball.holdTime || 0,
+      };
+    }
+
+    function createGameStateSnapshot() {
+      return {
+        startedAt: Date.now(),
+        firstTagger,
+        currentTagger,
+        roundNumber,
+        timeLeft,
+        blue: captureBallState(bluePlayer),
+        red: captureBallState(redPlayer),
+      };
+    }
+
+    function applyBallState(ball, state, { smooth = false } = {}) {
+      if (!state) return;
+      if (smooth) {
+        ball.x += (state.x - ball.x) * 0.55;
+        ball.y += (state.y - ball.y) * 0.55;
+      } else {
+        ball.x = state.x;
+        ball.y = state.y;
+      }
+      ball.vx = state.vx || 0;
+      ball.vy = state.vy || 0;
+      ball.holdTime = state.holdTime || 0;
+    }
+
+    function applyGameState(room, { includeLocal = false } = {}) {
+      if (!room?.gameState) return;
+      const localRole = getCurrentPlayerRole(room);
+      if (room.gameState.firstTagger) firstTagger = room.gameState.firstTagger;
+      if (room.gameState.currentTagger) currentTagger = room.gameState.currentTagger;
+      if (room.gameState.roundNumber) roundNumber = room.gameState.roundNumber;
+      if (room.gameState.timeLeft !== undefined) timeLeft = room.gameState.timeLeft;
+      if (includeLocal || localRole !== 'blue') {
+        applyBallState(bluePlayer, room.gameState.blue, { smooth: !includeLocal });
+      }
+      if (includeLocal || localRole !== 'red') {
+        applyBallState(redPlayer, room.gameState.red, { smooth: !includeLocal });
+      }
+      updateHud();
+    }
+
+    function enterStartedGameFromRoom(room) {
+      if (activeGameRoomId === room.id && screens.game.classList.contains('active')) return;
+      applyRoomPlayersToGame(room);
+      hardReset();
+      activeGameRoomId = room.id;
+      currentRoomId = room.id;
+      tournamentStarted = true;
+      gameRunning = true;
+      isPaused = false;
+      statusText = '진행 중';
+      overlayText = '';
+      spawnTimestamp = performance.now();
+      if (room.gameState) {
+        applyGameState(room, { includeLocal: true });
+      } else {
+        setupRound();
+      }
+      showScreen('game');
+      updateHud();
+    }
+
+    function syncRemoteGameState() {
+      const room = getCurrentRoom();
+      if (!room || room.status !== 'playing') return;
+      if (!screens.game.classList.contains('active')) {
+        enterStartedGameFromRoom(room);
+        return;
+      }
+      applyGameState(room);
+    }
+
+    async function publishLocalBallState() {
+      const now = performance.now();
+      const publishInterval = localApiSocketConnected ? 33 : 70;
+      if (now - lastGameStatePublishAt < publishInterval) return;
+      lastGameStatePublishAt = now;
+      const room = getCurrentRoom();
+      const role = getCurrentPlayerRole(room);
+      if (!room || room.status !== 'playing' || !role) return;
+      const ball = role === 'blue' ? bluePlayer : redPlayer;
+      const ballState = captureBallState(ball);
+      if (sendLocalApiSocketMessage({
+        type: 'player-state',
+        roomId: room.id,
+        role,
+        ballState,
+        gameState: { firstTagger, currentTagger, roundNumber, timeLeft },
+      })) {
+        remoteRooms = loadRooms().map(candidate => {
+          if (candidate.id !== room.id) return candidate;
+          const updatedRoom = updatePlayerGameState(candidate, role, ballState);
+          return {
+            ...updatedRoom,
+            gameState: {
+              ...updatedRoom.gameState,
+              firstTagger,
+              currentTagger,
+              roundNumber,
+              timeLeft,
+            },
+          };
+        });
+        return;
+      }
+      const withBallState = updatePlayerGameState(room, role, ballState);
+      await persistUpdatedRoom({
+        ...withBallState,
+        gameState: {
+          ...withBallState.gameState,
+          firstTagger,
+          currentTagger,
+          roundNumber,
+          timeLeft,
+        },
+      });
+    }
+
+    async function maybeRefreshGameRooms() {
+      if (!localApiRoomsEnabled || localApiSocketConnected || localApiStreamConnected || !screens.game.classList.contains('active')) return;
+      const now = performance.now();
+      if (now - lastLocalGameFetchAt < 250) return;
+      lastLocalGameFetchAt = now;
+      await refreshLocalApiRooms();
     }
 
     function clearTimersAndPending() {
@@ -1005,6 +1414,12 @@
       canvas.focus();
     }
 
+    function setupInitialRoundForHost() {
+      firstTagger = Math.random() < 0.5 ? 'red' : 'blue';
+      currentTagger = firstTagger;
+      setupRound();
+    }
+
     function showCountdown(messages, onComplete) {
       clearTimersAndPending();
       gameRunning = false;
@@ -1108,10 +1523,18 @@
       if (distance <= minDistance) finishRound(true);
     }
 
-    function startTournamentFromRoom() {
+    async function startTournamentFromRoom() {
       const room = getCurrentRoom();
       if (!room || room.players.length < 2) {
         roomStatus.textContent = '두 명이 입장해야 게임을 시작할 수 있습니다.';
+        return;
+      }
+      if (room.hostId !== currentPlayer?.id) {
+        roomStatus.textContent = '방장만 게임을 시작할 수 있습니다.';
+        return;
+      }
+      if (!room.players.every(player => player.ready)) {
+        roomStatus.textContent = '두 플레이어가 모두 Ready 상태여야 시작할 수 있습니다.';
         return;
       }
       applyRoomPlayersToGame(room);
@@ -1123,11 +1546,16 @@
       blueTotalTime = 0;
       wallEffects = [];
       lastReactionEl.textContent = '-';
-      firstTagger = Math.random() < 0.5 ? 'red' : 'blue';
-      currentTagger = firstTagger;
       tournamentStarted = true;
+      gameRunning = true;
+      statusText = '진행 중';
+      overlayText = '';
       renderLogTable();
-      setupRound();
+      setupInitialRoundForHost();
+      const startedRoom = startRoom(room, createGameStateSnapshot());
+      const saved = await persistUpdatedRoom(startedRoom);
+      if (!saved) return;
+      activeGameRoomId = room.id;
       showScreen('game');
       launchRound(true);
     }
@@ -1181,8 +1609,15 @@
       const deltaSec = Math.min(0.03, (now - lastFrameTime) / 1000);
       lastFrameTime = now;
       if (gameRunning) {
-        updateBall(redPlayer, inputForScheme(redControlScheme), deltaSec);
-        updateBall(bluePlayer, inputForScheme(blueControlScheme), deltaSec);
+        const localRole = getCurrentPlayerRole();
+        if (localRole === 'red') {
+          updateBall(redPlayer, inputForScheme(redControlScheme), deltaSec);
+        } else if (localRole === 'blue') {
+          updateBall(bluePlayer, inputForScheme(blueControlScheme), deltaSec);
+        }
+        maybeRefreshGameRooms();
+        syncRemoteGameState();
+        publishLocalBallState();
         resolvePlayerCollision();
         reactionTimeEl.textContent = Math.max(0, Math.round(performance.now() - spawnTimestamp));
       }
@@ -1201,7 +1636,9 @@
     });
     createRoomBtn.addEventListener('click', createNewRoom);
     joinByCodeBtn.addEventListener('click', joinRoomByCode);
+    clearLocalRoomsBtn.addEventListener('click', clearLocalRooms);
     addLocalGuestBtn.addEventListener('click', addLocalGuest);
+    readyBtn.addEventListener('click', toggleReady);
     startRoomGameBtn.addEventListener('click', startTournamentFromRoom);
     leaveRoomBtn.addEventListener('click', leaveRoom);
     resetBtn.addEventListener('click', hardReset);
@@ -1259,10 +1696,14 @@
     roomSync?.addEventListener('message', (event) => {
       if (event.data?.type === 'rooms-updated') refreshRoomViews();
     });
-    setInterval(refreshRoomViews, 1500);
+    setInterval(() => {
+      if (localApiRoomsEnabled) refreshLocalApiRooms();
+      else refreshRoomViews();
+    }, 1500);
     window.addEventListener('blur', resetInputs);
     canvas.addEventListener('click', () => canvas.focus());
 
+    initializeRoomBackend();
     if (currentPlayer) {
       nicknameInput.value = currentPlayer.nickname;
       controlSchemeSelect.value = currentPlayer.controlScheme;
