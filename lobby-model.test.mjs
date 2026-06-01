@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   createRoom,
   joinRoom,
+  leaveRoom,
   sanitizeNickname,
   sanitizeRoomTitle,
 } from './lobby-model.js';
@@ -29,5 +30,11 @@ assert.throws(() => joinRoom(lockedRoom, guest, 'wrong'), /비밀번호/);
 assert.equal(joinRoom(lockedRoom, guest, '1234').players.length, 2);
 
 assert.throws(() => joinRoom(joinedOpenRoom, { ...guest, id: 'guest-2' }, ''), /가득/);
+
+assert.equal(leaveRoom(openRoom, host.id), null);
+
+const guestLeftRoom = leaveRoom(joinedOpenRoom, guest.id);
+assert.equal(guestLeftRoom.players.length, 1);
+assert.equal(guestLeftRoom.players[0].id, host.id);
 
 console.log('lobby model tests passed');

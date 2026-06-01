@@ -39,3 +39,10 @@ export function joinRoom(room, player, password) {
     players: [...room.players, { ...player, role: 'red', ready: false }],
   };
 }
+
+export function leaveRoom(room, playerId) {
+  if (room.hostId === playerId) return null;
+  const players = room.players.filter(player => player.id !== playerId);
+  if (!players.length) return null;
+  return { ...room, players };
+}

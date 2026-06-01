@@ -405,6 +405,7 @@
     import {
       createRoom,
       joinRoom,
+      leaveRoom as leaveRoomModel,
       sanitizeNickname,
     } from './lobby-model.js';
 
@@ -413,6 +414,8 @@
     const ROUND_TIME = 30;
     const PLAYER_STORAGE_KEY = 'ballfight.player';
     const ROOMS_STORAGE_KEY = 'ballfight.rooms';
+    const ROOM_SYNC_CHANNEL = 'ballfight.rooms.sync';
+    const roomSync = 'BroadcastChannel' in window ? new BroadcastChannel(ROOM_SYNC_CHANNEL) : null;
 
     const screens = {
       login: document.getElementById('loginScreen'),
@@ -529,6 +532,13 @@
 
     function saveRooms(rooms) {
       localStorage.setItem(ROOMS_STORAGE_KEY, JSON.stringify(rooms));
+      roomSync?.postMessage({ type: 'rooms-updated' });
+      refreshRoomViews();
+    }
+
+    function refreshRoomViews() {
+      if (screens.lobby.classList.contains('active')) renderLobby();
+      if (screens.room.classList.contains('active')) renderRoom();
     }
 
     function showScreen(name) {
@@ -549,8 +559,6 @@
     function updateRoom(nextRoom) {
       const rooms = loadRooms().map(room => room.id === nextRoom.id ? nextRoom : room);
       saveRooms(rooms);
-      renderRoom();
-      renderLobby();
     }
 
     function roleName(role) {
@@ -728,6 +736,15 @@
     }
 
     function leaveRoom() {
+      const room = getCurrentRoom();
+      if (room && currentPlayer) {
+        const nextRoom = leaveRoomModel(room, currentPlayer.id);
+        const rooms = loadRooms();
+        saveRooms(nextRoom
+          ? rooms.map(candidate => candidate.id === room.id ? nextRoom : candidate)
+          : rooms.filter(candidate => candidate.id !== room.id)
+        );
+      }
       currentRoomId = null;
       showScreen('lobby');
     }
@@ -1236,10 +1253,13 @@
 
     window.addEventListener('storage', (event) => {
       if (event.key === ROOMS_STORAGE_KEY) {
-        renderLobby();
-        if (currentRoomId) renderRoom();
+        refreshRoomViews();
       }
     });
+    roomSync?.addEventListener('message', (event) => {
+      if (event.data?.type === 'rooms-updated') refreshRoomViews();
+    });
+    setInterval(refreshRoomViews, 1500);
     window.addEventListener('blur', resetInputs);
     canvas.addEventListener('click', () => canvas.focus());
 
