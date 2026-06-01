@@ -199,10 +199,12 @@
   </div>
 
   <script>
+    // 게임 진행 규칙: 총 10판 중 5판마다 술래 역할을 교대합니다.
     const TOTAL_ROUNDS = 10;
     const HALF_ROUNDS = 5;
     const ROUND_TIME = 30;
 
+    // 화면 그리기와 UI 상태 갱신에 필요한 DOM 요소를 미리 가져옵니다.
     const canvas = document.getElementById('gameCanvas');
     const ctx = canvas.getContext('2d');
 
@@ -226,9 +228,11 @@
     const logBody = document.getElementById('logBody');
     const emptyText = document.getElementById('emptyText');
 
+    // 두 플레이어의 현재 키 입력 상태입니다. 프레임마다 이 값을 읽어 이동을 계산합니다.
     const arrowInput = { up: false, down: false, left: false, right: false };
     const wasdInput = { up: false, down: false, left: false, right: false };
 
+    // 토너먼트와 라운드의 현재 상태를 저장하는 값들입니다.
     let roundNumber = 1;
     let timeLeft = ROUND_TIME;
     let gameRunning = false;
@@ -254,12 +258,14 @@
     let wallEffects = [];
     let roundAdvanceTimeout = null;
 
+    // 공의 기본 물리값입니다. 가속도/마찰/반발값을 바꾸면 조작감이 달라집니다.
     const BASE_RADIUS = 22;
     const BASE_ACCEL = 780;
     const BASE_MAX_SPEED = 340;
     const BASE_FRICTION = 0.985;
     const BASE_BOUNCE = 0.72;
 
+    // 빨간 공은 방향키로 조작합니다.
     const redPlayer = {
       x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
       accel: BASE_ACCEL, maxSpeed: BASE_MAX_SPEED,
@@ -267,6 +273,7 @@
       color: '#ef4444', core: '#ffffff'
     };
 
+    // 파란 공은 W/A/S/D로 조작합니다.
     const bluePlayer = {
       x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
       accel: BASE_ACCEL, maxSpeed: BASE_MAX_SPEED,
@@ -297,6 +304,7 @@
     }
 
     function syncNameLockUi() {
+      // 이름 등록이 끝난 입력칸은 잠가서 게임 중 이름이 바뀌지 않게 합니다.
       redNameInput.disabled = redNameLocked;
       blueNameInput.disabled = blueNameLocked;
       redNameConfirmBtn.disabled = redNameLocked;
@@ -331,6 +339,7 @@
     }
 
     function clearTimersAndPending() {
+      // 새 라운드나 리셋 전에 남아 있는 타이머를 모두 정리합니다.
       if (timerId) {
         clearInterval(timerId);
         timerId = null;
@@ -346,6 +355,7 @@
     }
 
     function renderLogTable() {
+      // 라운드마다 저장한 결과를 아래 기록 테이블에 다시 그립니다.
       logBody.innerHTML = '';
       emptyText.style.display = logs.length ? 'none' : 'block';
       for (const log of logs) {
@@ -361,6 +371,7 @@
     }
 
     function updateHud() {
+      // 화면 상단 HUD를 현재 게임 상태와 누적 기록에 맞춰 갱신합니다.
       roundTextEl.textContent = roundNumber;
       timeEl.textContent = timeLeft;
       taggerTextEl.textContent = displayName(currentTagger);
@@ -371,6 +382,7 @@
     }
 
     function placePlayers() {
+      // 두 공을 좌우로 떨어뜨려 배치하고, 너무 가까우면 파란 공 위치를 다시 뽑습니다.
       redPlayer.x = randomRange(canvas.width - 260, canvas.width - 130);
       redPlayer.y = randomRange(100, canvas.height - 100);
       redPlayer.vx = 0;
@@ -390,6 +402,7 @@
     }
 
     function drawBackground() {
+      // 경기장 배경과 격자선을 그립니다.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#f3f4f6';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -410,6 +423,7 @@
     }
 
     function drawBall(ball, isTagger) {
+      // 공을 그리고, 현재 술래라면 노란 테두리로 표시합니다.
       ctx.beginPath();
       ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
       ctx.fillStyle = ball.color;
@@ -429,6 +443,7 @@
     }
 
     function drawWallEffects(now) {
+      // 벽에 부딪힌 순간 생기는 짧은 파동 효과를 시간에 따라 흐리게 그립니다.
       wallEffects = wallEffects.filter(effect => now - effect.start < effect.duration);
       for (const effect of wallEffects) {
         const t = (now - effect.start) / effect.duration;
@@ -457,6 +472,7 @@
     }
 
     function drawOverlay(text) {
+      // 시작/일시정지/종료 등 게임 상태 안내 문구를 캔버스 위에 덮어씁니다.
       if (!text) return;
       ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -471,6 +487,7 @@
     }
 
     function drawFrame() {
+      // 매 프레임 배경, 효과, 플레이어, 오버레이를 순서대로 렌더링합니다.
       drawBackground();
       drawWallEffects(performance.now());
       drawBall(redPlayer, currentTagger === 'red');
@@ -479,6 +496,7 @@
     }
 
     function updateBall(ball, inputState, deltaSec) {
+      // 입력 방향을 속도로 바꾸고, 마찰과 벽 충돌까지 한 번에 계산합니다.
       let inputX = 0;
       let inputY = 0;
       if (inputState.left) inputX -= 1;
@@ -493,6 +511,7 @@
         inputX /= len;
         inputY /= len;
 
+        // 같은 방향키를 오래 누를수록 조금 더 빠르게 반응하도록 부스트를 줍니다.
         ball.holdTime += deltaSec;
 
         const progressiveBoost = 1 + Math.min(1.15, Math.pow(ball.holdTime, 1.18) * 0.42);
@@ -541,6 +560,7 @@
     }
 
     function addRecord(result, reactionMs) {
+      // 라운드 결과를 저장하고, 술래별 누적 시간을 업데이트합니다.
       logs.push({ round: roundNumber, tagger: currentTagger, result, reactionMs });
       renderLogTable();
       lastReactionEl.textContent = `${reactionMs} ms`;
@@ -550,6 +570,7 @@
     }
 
     function startMainTimer() {
+      // 라운드 제한 시간을 1초씩 줄이고, 시간이 끝나면 술래 패배로 처리합니다.
       clearTimersAndPending();
       timerId = setInterval(() => {
         if (!gameRunning || isPaused) return;
@@ -562,6 +583,7 @@
     }
 
     function setupRound() {
+      // 새 라운드 시작 전에 시간, 입력, 위치를 초기화합니다.
       timeLeft = ROUND_TIME;
       pausedElapsedBeforePause = 0;
       resetInputs();
@@ -571,6 +593,7 @@
     }
 
     function showCountdown(messages, onComplete) {
+      // 게임을 잠시 멈춘 상태로 카운트다운 문구를 순서대로 보여준 뒤 콜백을 실행합니다.
       clearTimersAndPending();
       gameRunning = false;
       isCountingDown = true;
@@ -591,6 +614,7 @@
     }
 
     function launchRound(withAnnouncement) {
+      // 일반 라운드 시작 흐름입니다. 첫 라운드만 술래 안내 문구를 포함합니다.
       const messages = withAnnouncement
         ? [`술래는 ${displayName(currentTagger)} 입니다.`, '3', '2', '1', 'Start!']
         : ['3', '2', '1', 'Start!'];
@@ -607,6 +631,7 @@
     }
 
     function launchPhaseSwitch() {
+      // 6라운드부터 술래가 반대로 바뀔 때 별도 안내 카운트다운을 보여줍니다.
       showCountdown([
         `이번 술래는 ${displayName(currentTagger)}입니다.`,
         '3',
@@ -625,6 +650,7 @@
     }
 
     function finishTournament() {
+      // 모든 라운드가 끝나면 누적 시간이 더 짧은 플레이어를 승자로 표시합니다.
       gameRunning = false;
       isCountingDown = false;
       isPaused = false;
@@ -640,6 +666,7 @@
     }
 
     function prepareNextRound() {
+      // 다음 라운드로 넘어가거나, 5판이 끝났다면 술래를 교대합니다.
       roundNumber += 1;
       if (roundNumber > TOTAL_ROUNDS) {
         finishTournament();
@@ -656,6 +683,7 @@
     }
 
     function finishRound(caught) {
+      // 접촉 성공 또는 시간 초과로 라운드를 끝내고 기록을 남깁니다.
       if (!tournamentStarted) return;
       gameRunning = false;
       isPaused = false;
@@ -674,12 +702,14 @@
     }
 
     function resolvePlayerCollision() {
+      // 두 공의 중심 거리가 반지름 합보다 작으면 잡힌 것으로 판정합니다.
       const distance = Math.hypot(bluePlayer.x - redPlayer.x, bluePlayer.y - redPlayer.y);
       const minDistance = redPlayer.r + bluePlayer.r;
       if (distance <= minDistance) finishRound(true);
     }
 
     function startTournament() {
+      // 새 토너먼트를 시작하면서 기록, 누적 시간, 첫 술래를 모두 초기화합니다.
       clearTimersAndPending();
       if (!redNameLocked) {
         redPlayerName = sanitizePlayerName(redNameInput.value, '빨간공');
@@ -706,6 +736,7 @@
     }
 
     function pauseGame() {
+      // 현재 반응 시간을 보존한 채 게임과 타이머를 멈춥니다.
       if (!gameRunning || isPaused) return;
       gameRunning = false;
       isPaused = true;
@@ -717,12 +748,14 @@
     }
 
     function resumeGame() {
+      // 일시정지했던 라운드는 남은 시간과 기존 반응 시간을 이어서 진행합니다.
       if (!isPaused) return;
       resetInputs();
       launchRound(false);
     }
 
     function hardReset() {
+      // 게임을 처음 상태로 되돌리고, 이름 입력도 다시 수정 가능하게 풉니다.
       clearTimersAndPending();
       resetInputs();
       gameRunning = false;
@@ -748,6 +781,7 @@
     }
 
     function gameLoop(now) {
+      // requestAnimationFrame 기반 메인 루프입니다. 물리 업데이트 후 화면을 다시 그립니다.
       const deltaSec = Math.min(0.03, (now - lastFrameTime) / 1000);
       lastFrameTime = now;
 
@@ -762,6 +796,7 @@
       requestAnimationFrame(gameLoop);
     }
 
+    // 이름 입력 이벤트입니다. 버튼 클릭 또는 Enter 키로 이름을 확정할 수 있습니다.
     redNameConfirmBtn.addEventListener('click', () => confirmPlayerName('red'));
     blueNameConfirmBtn.addEventListener('click', () => confirmPlayerName('blue'));
 
@@ -778,6 +813,7 @@
       }
     });
 
+    // 키를 누르는 동안 입력 상태를 true로 바꿔 플레이어가 계속 움직이게 합니다.
     window.addEventListener('keydown', (e) => {
       const key = e.key;
       const lower = key.toLowerCase();
@@ -811,6 +847,7 @@
       if (lower === 'd') wasdInput.right = true;
     });
 
+    // 키를 떼면 해당 방향 입력을 해제합니다.
     window.addEventListener('keyup', (e) => {
       const key = e.key;
       const lower = key.toLowerCase();
@@ -826,6 +863,7 @@
       if (lower === 'd') wasdInput.right = false;
     });
 
+    // 초기 화면 상태를 준비하고 애니메이션 루프를 시작합니다.
     window.addEventListener('blur', resetInputs);
     canvas.addEventListener('click', () => canvas.focus());
     startBtn.addEventListener('click', startTournament);
