@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2P Tag Tournament</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #111;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 24px 12px 40px;
+    }
+    .wrap {
+      width: 1060px;
+      max-width: 96vw;
+      text-align: center;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+    }
+    .name-grid, .hud, .hud-row-2 {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .name-grid { grid-template-columns: 1fr 1fr; }
+    .hud { grid-template-columns: repeat(5, 1fr); }
+    .hud-row-2 { grid-template-columns: repeat(3, 1fr); }
+    .panel {
+      background: #1f2937;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .name-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    input {
+      flex: 1;
+      padding: 10px;
+      border-radius: 8px;
+      border: 0;
+      font-size: 15px;
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      background: #f3f4f6;
+      border: 2px solid #333;
+      border-radius: 10px;
+      display: block;
+      outline: none;
+    }
+    .buttons {
+      margin-top: 14px;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 18px;
+      font-size: 16px;
+      font-weight: bold;
+      border: 0;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .guide {
+      margin-top: 12px;
+      color: #cbd5e1;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .table-wrap {
+      margin-top: 18px;
+      background: #1f2937;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: left;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      background: #fff;
+      color: #111;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: center;
+      font-size: 14px;
+    }
+    th { background: #e5e7eb; }
+    .table-scroll {
+      max-height: 320px;
+      overflow-y: auto;
+      border-radius: 8px;
+    }
+    .empty-text {
+      color: #cbd5e1;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+    .status-small {
+      font-size: 12px;
+      color: #cbd5e1;
+      margin-top: 8px;
+      text-align: left;
+    }
+    @media (max-width: 900px) {
+      .name-grid, .hud, .hud-row-2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>2P 술래잡기 토너먼트</h1>
+
+    <div class="name-grid">
+    <div class="panel">
+        <div style="font-size:14px;margin-bottom:8px;text-align:left;">파란 공 플레이어명</div>
+        <div class="name-row">
+        <input id="blueNameInput" type="text" placeholder="예: 지수 / Jisoo" autocomplete="off" />
+        <button id="blueNameConfirmBtn" type="button">Enter</button>
+        </div>
+        <div id="blueNameStatus" class="status-small">미등록</div>
+    </div>
+
+    <div class="panel">
+        <div style="font-size:14px;margin-bottom:8px;text-align:left;">빨간 공 플레이어명</div>
+        <div class="name-row">
+        <input id="redNameInput" type="text" placeholder="예: 민호 / Minho" autocomplete="off" />
+        <button id="redNameConfirmBtn" type="button">Enter</button>
+        </div>
+        <div id="redNameStatus" class="status-small">미등록</div>
+    </div>
+    </div>
+
+    <div class="hud">
+      <div class="panel">현재 판: <span id="roundText">1</span> / 10</div>
+      <div class="panel">남은 시간: <span id="time">30</span>s</div>
+      <div class="panel">현재 술래: <span id="taggerText">-</span></div>
+      <div class="panel">상태: <span id="statusText">대기 중</span></div>
+      <div class="panel">마지막 기록: <span id="lastReaction">-</span></div>
+    </div>
+
+    <div class="hud-row-2">
+      <div class="panel">현재 판 진행 시간: <span id="reactionTime">0</span> ms</div>
+      <div class="panel">빨간 공 누적 시간: <span id="redTotal">0</span> ms</div>
+      <div class="panel">파란 공 누적 시간: <span id="blueTotal">0</span> ms</div>
+    </div>
+
+    <canvas id="gameCanvas" width="1040" height="580" tabindex="0"></canvas>
+
+    <div class="buttons">
+      <button id="startBtn">게임 시작</button>
+      <button id="resetBtn">게임 Reset</button>
+    </div>
+
+    <div class="guide">
+      빨간 공: 방향키<br>
+      파란 공: W / A / S / D<br>
+      총 10판 진행. 첫 5판은 랜덤으로 결정된 한 플레이어가 술래, 이후 5판은 반대 플레이어가 술래입니다.<br>
+      P: 일시정지 / R: 재개 카운트다운<br>
+      현재 술래는 노란색 테두리로 표시됩니다.<br>
+      W/A/S/D 입력이 안 되면 키보드 입력을 영문으로 바꾸세요.
+    </div>
+
+    <div class="table-wrap">
+      <strong>판별 기록</strong>
+      <div class="empty-text" id="emptyText">아직 기록이 없습니다.</div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>판</th>
+              <th>술래</th>
+              <th>결과</th>
+              <th>기록 시간 (ms)</th>
+            </tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const TOTAL_ROUNDS = 10;
+    const HALF_ROUNDS = 5;
+    const ROUND_TIME = 30;
+
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    const redNameInput = document.getElementById('redNameInput');
+    const blueNameInput = document.getElementById('blueNameInput');
+    const redNameConfirmBtn = document.getElementById('redNameConfirmBtn');
+    const blueNameConfirmBtn = document.getElementById('blueNameConfirmBtn');
+    const redNameStatus = document.getElementById('redNameStatus');
+    const blueNameStatus = document.getElementById('blueNameStatus');
+
+    const roundTextEl = document.getElementById('roundText');
+    const timeEl = document.getElementById('time');
+    const taggerTextEl = document.getElementById('taggerText');
+    const statusTextEl = document.getElementById('statusText');
+    const lastReactionEl = document.getElementById('lastReaction');
+    const reactionTimeEl = document.getElementById('reactionTime');
+    const redTotalEl = document.getElementById('redTotal');
+    const blueTotalEl = document.getElementById('blueTotal');
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const logBody = document.getElementById('logBody');
+    const emptyText = document.getElementById('emptyText');
+
+    const arrowInput = { up: false, down: false, left: false, right: false };
+    const wasdInput = { up: false, down: false, left: false, right: false };
+
+    let roundNumber = 1;
+    let timeLeft = ROUND_TIME;
+    let gameRunning = false;
+    let isCountingDown = false;
+    let isPaused = false;
+    let tournamentStarted = false;
+    let timerId = null;
+    let countdownTimerId = null;
+    let spawnTimestamp = 0;
+    let pausedElapsedBeforePause = 0;
+    let logs = [];
+    let overlayText = '게임 시작 버튼을 누르세요';
+    let statusText = '대기 중';
+    let lastFrameTime = performance.now();
+    let firstTagger = Math.random() < 0.5 ? 'red' : 'blue';
+    let currentTagger = firstTagger;
+    let redTotalTime = 0;
+    let blueTotalTime = 0;
+    let redPlayerName = '빨간공';
+    let bluePlayerName = '파란공';
+    let redNameLocked = false;
+    let blueNameLocked = false;
+    let wallEffects = [];
+    let roundAdvanceTimeout = null;
+
+    const BASE_RADIUS = 22;
+    const BASE_ACCEL = 780;
+    const BASE_MAX_SPEED = 340;
+    const BASE_FRICTION = 0.985;
+    const BASE_BOUNCE = 0.72;
+
+    const redPlayer = {
+      x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
+      accel: BASE_ACCEL, maxSpeed: BASE_MAX_SPEED,
+      friction: BASE_FRICTION, bounce: BASE_BOUNCE,
+      color: '#ef4444', core: '#ffffff'
+    };
+
+    const bluePlayer = {
+      x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
+      accel: BASE_ACCEL, maxSpeed: BASE_MAX_SPEED,
+      friction: BASE_FRICTION, bounce: BASE_BOUNCE,
+      color: '#2563eb', core: '#dbeafe'
+    };
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function randomRange(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function colorName(color) {
+      return color === 'red' ? '빨간' : '파란';
+    }
+
+    function displayName(color) {
+      return color === 'red' ? redPlayerName : bluePlayerName;
+    }
+
+    function sanitizePlayerName(value, fallback) {
+      const trimmed = (value || '').trim();
+      if (!trimmed) return fallback;
+      return trimmed.slice(0, 20);
+    }
+
+    function syncNameLockUi() {
+      redNameInput.disabled = redNameLocked;
+      blueNameInput.disabled = blueNameLocked;
+      redNameConfirmBtn.disabled = redNameLocked;
+      blueNameConfirmBtn.disabled = blueNameLocked;
+      redNameStatus.textContent = redNameLocked ? `등록됨: ${redPlayerName}` : '미등록';
+      blueNameStatus.textContent = blueNameLocked ? `등록됨: ${bluePlayerName}` : '미등록';
+    }
+
+    function confirmPlayerName(color) {
+      if (color === 'red') {
+        redPlayerName = sanitizePlayerName(redNameInput.value, '빨간공');
+        redNameInput.value = redPlayerName;
+        redNameLocked = true;
+      } else {
+        bluePlayerName = sanitizePlayerName(blueNameInput.value, '파란공');
+        blueNameInput.value = bluePlayerName;
+        blueNameLocked = true;
+      }
+      syncNameLockUi();
+      updateHud();
+    }
+
+    function unlockPlayerNames() {
+      redNameLocked = false;
+      blueNameLocked = false;
+      syncNameLockUi();
+    }
+
+    function resetInputs() {
+      for (const k of Object.keys(arrowInput)) arrowInput[k] = false;
+      for (const k of Object.keys(wasdInput)) wasdInput[k] = false;
+    }
+
+    function clearTimersAndPending() {
+      if (timerId) {
+        clearInterval(timerId);
+        timerId = null;
+      }
+      if (countdownTimerId) {
+        clearInterval(countdownTimerId);
+        countdownTimerId = null;
+      }
+      if (roundAdvanceTimeout) {
+        clearTimeout(roundAdvanceTimeout);
+        roundAdvanceTimeout = null;
+      }
+    }
+
+    function renderLogTable() {
+      logBody.innerHTML = '';
+      emptyText.style.display = logs.length ? 'none' : 'block';
+      for (const log of logs) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${log.round}</td>
+          <td>${displayName(log.tagger)}</td>
+          <td>${log.result}</td>
+          <td>${log.reactionMs}</td>
+        `;
+        logBody.appendChild(tr);
+      }
+    }
+
+    function updateHud() {
+      roundTextEl.textContent = roundNumber;
+      timeEl.textContent = timeLeft;
+      taggerTextEl.textContent = displayName(currentTagger);
+      statusTextEl.textContent = statusText;
+      reactionTimeEl.textContent = gameRunning ? Math.max(0, Math.round(performance.now() - spawnTimestamp)) : 0;
+      redTotalEl.textContent = Math.round(redTotalTime);
+      blueTotalEl.textContent = Math.round(blueTotalTime);
+    }
+
+    function placePlayers() {
+      redPlayer.x = randomRange(canvas.width - 260, canvas.width - 130);
+      redPlayer.y = randomRange(100, canvas.height - 100);
+      redPlayer.vx = 0;
+      redPlayer.vy = 0;
+      
+      bluePlayer.x = randomRange(130, 260);
+      bluePlayer.y = randomRange(100, canvas.height - 100);
+      bluePlayer.vx = 0;
+      bluePlayer.vy = 0;
+      
+      let guard = 0;
+      while (Math.hypot(redPlayer.x - bluePlayer.x, redPlayer.y - bluePlayer.y) < 300 && guard < 100) {
+        bluePlayer.x = randomRange(130, 260);
+        bluePlayer.y = randomRange(100, canvas.height - 100);
+        guard += 1;
+      }
+    }
+
+    function drawBackground() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#f3f4f6';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = '#d1d5db';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= canvas.width; x += 40) {
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, canvas.height);
+        ctx.stroke();
+      }
+      for (let y = 0; y <= canvas.height; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(canvas.width, y);
+        ctx.stroke();
+      }
+    }
+
+    function drawBall(ball, isTagger) {
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fillStyle = ball.color;
+      ctx.fill();
+      if (isTagger) {
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = '#facc15';
+        ctx.stroke();
+      }
+      ctx.closePath();
+
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r * 0.45, 0, Math.PI * 2);
+      ctx.fillStyle = ball.core;
+      ctx.fill();
+      ctx.closePath();
+    }
+
+    function drawWallEffects(now) {
+      wallEffects = wallEffects.filter(effect => now - effect.start < effect.duration);
+      for (const effect of wallEffects) {
+        const t = (now - effect.start) / effect.duration;
+        const alpha = Math.max(0, 0.38 * (1 - t));
+        const radius = effect.baseRadius + 34 * t;
+        ctx.save();
+        ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+        ctx.lineWidth = 4 * (1 - t * 0.45);
+        ctx.beginPath();
+        if (effect.side === 'left') {
+          ctx.arc(0, effect.y, radius, -Math.PI / 2, Math.PI / 2, false);
+        } else if (effect.side === 'right') {
+          ctx.arc(canvas.width, effect.y, radius, Math.PI / 2, -Math.PI / 2, false);
+        } else if (effect.side === 'top') {
+          ctx.arc(effect.x, 0, radius, 0, Math.PI, false);
+        } else {
+          ctx.arc(effect.x, canvas.height, radius, Math.PI, 0, false);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    function spawnWallEffect(side, x, y) {
+      wallEffects.push({ side, x, y, start: performance.now(), duration: 320, baseRadius: 18 });
+    }
+
+    function drawOverlay(text) {
+      if (!text) return;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 34px Arial';
+      const lines = text.split('\n');
+      lines.forEach((line, idx) => {
+        ctx.fillText(line, canvas.width / 2, canvas.height / 2 + idx * 44 - 24);
+      });
+    }
+
+    function drawFrame() {
+      drawBackground();
+      drawWallEffects(performance.now());
+      drawBall(redPlayer, currentTagger === 'red');
+      drawBall(bluePlayer, currentTagger === 'blue');
+      if (!gameRunning) drawOverlay(overlayText);
+    }
+
+    function updateBall(ball, inputState, deltaSec) {
+      let inputX = 0;
+      let inputY = 0;
+      if (inputState.left) inputX -= 1;
+      if (inputState.right) inputX += 1;
+      if (inputState.up) inputY -= 1;
+      if (inputState.down) inputY += 1;
+
+      if (ball.holdTime === undefined) ball.holdTime = 0;
+
+      if (inputX !== 0 || inputY !== 0) {
+        const len = Math.hypot(inputX, inputY) || 1;
+        inputX /= len;
+        inputY /= len;
+
+        ball.holdTime += deltaSec;
+
+        const progressiveBoost = 1 + Math.min(1.15, Math.pow(ball.holdTime, 1.18) * 0.42);
+        const accelValue = ball.accel * progressiveBoost;
+        const dynamicMaxSpeed = ball.maxSpeed * (1 + Math.min(0.22, ball.holdTime * 0.09));
+
+        ball.vx += inputX * accelValue * deltaSec;
+        ball.vy += inputY * accelValue * deltaSec;
+
+        ball.vx = clamp(ball.vx, -dynamicMaxSpeed, dynamicMaxSpeed);
+        ball.vy = clamp(ball.vy, -dynamicMaxSpeed, dynamicMaxSpeed);
+      } else {
+        ball.holdTime = 0;
+        ball.vx *= Math.pow(ball.friction, deltaSec * 60);
+        ball.vy *= Math.pow(ball.friction, deltaSec * 60);
+      }
+
+      ball.x += ball.vx * deltaSec;
+      ball.y += ball.vy * deltaSec;
+
+      if (ball.x - ball.r <= 0) {
+        ball.x = ball.r;
+        ball.vx = Math.abs(ball.vx) * ball.bounce;
+        ball.holdTime *= 0.72;
+        spawnWallEffect('left', ball.x, ball.y);
+      } else if (ball.x + ball.r >= canvas.width) {
+        ball.x = canvas.width - ball.r;
+        ball.vx = -Math.abs(ball.vx) * ball.bounce;
+        ball.holdTime *= 0.72;
+        spawnWallEffect('right', ball.x, ball.y);
+      }
+      if (ball.y - ball.r <= 0) {
+        ball.y = ball.r;
+        ball.vy = Math.abs(ball.vy) * ball.bounce;
+        ball.holdTime *= 0.72;
+        spawnWallEffect('top', ball.x, ball.y);
+      } else if (ball.y + ball.r >= canvas.height) {
+        ball.y = canvas.height - ball.r;
+        ball.vy = -Math.abs(ball.vy) * ball.bounce;
+        ball.holdTime *= 0.72;
+        spawnWallEffect('bottom', ball.x, ball.y);
+      }
+
+      if (Math.abs(ball.vx) < 0.5) ball.vx = 0;
+      if (Math.abs(ball.vy) < 0.5) ball.vy = 0;
+    }
+
+    function addRecord(result, reactionMs) {
+      logs.push({ round: roundNumber, tagger: currentTagger, result, reactionMs });
+      renderLogTable();
+      lastReactionEl.textContent = `${reactionMs} ms`;
+      if (currentTagger === 'red') redTotalTime += reactionMs;
+      else blueTotalTime += reactionMs;
+      updateHud();
+    }
+
+    function startMainTimer() {
+      clearTimersAndPending();
+      timerId = setInterval(() => {
+        if (!gameRunning || isPaused) return;
+        timeLeft -= 1;
+        updateHud();
+        if (timeLeft <= 0) {
+          finishRound(false);
+        }
+      }, 1000);
+    }
+
+    function setupRound() {
+      timeLeft = ROUND_TIME;
+      pausedElapsedBeforePause = 0;
+      resetInputs();
+      placePlayers();
+      updateHud();
+      canvas.focus();
+    }
+
+    function showCountdown(messages, onComplete) {
+      clearTimersAndPending();
+      gameRunning = false;
+      isCountingDown = true;
+      statusText = '카운트다운';
+      updateHud();
+      let index = 0;
+      overlayText = messages[index];
+      countdownTimerId = setInterval(() => {
+        index += 1;
+        if (index < messages.length) {
+          overlayText = messages[index];
+        } else {
+          clearTimersAndPending();
+          isCountingDown = false;
+          onComplete();
+        }
+      }, 1000);
+    }
+
+    function launchRound(withAnnouncement) {
+      const messages = withAnnouncement
+        ? [`술래는 ${displayName(currentTagger)} 입니다.`, '3', '2', '1', 'Start!']
+        : ['3', '2', '1', 'Start!'];
+
+      showCountdown(messages, () => {
+        overlayText = '';
+        gameRunning = true;
+        isPaused = false;
+        statusText = '진행 중';
+        spawnTimestamp = performance.now() - pausedElapsedBeforePause;
+        updateHud();
+        startMainTimer();
+      });
+    }
+
+    function launchPhaseSwitch() {
+      showCountdown([
+        `이번 술래는 ${displayName(currentTagger)}입니다.`,
+        '3',
+        '2',
+        '1',
+        'Start!'
+      ], () => {
+        overlayText = '';
+        gameRunning = true;
+        isPaused = false;
+        statusText = '진행 중';
+        spawnTimestamp = performance.now();
+        updateHud();
+        startMainTimer();
+      });
+    }
+
+    function finishTournament() {
+      gameRunning = false;
+      isCountingDown = false;
+      isPaused = false;
+      tournamentStarted = false;
+      clearTimersAndPending();
+      startBtn.disabled = false;
+      statusText = '종료';
+      let winnerText = '이번 술래잡기 게임은 무승부입니다.';
+      if (redTotalTime < blueTotalTime) winnerText = `이번 술래잡기 게임 승자는 ${redPlayerName} 입니다.`;
+      if (blueTotalTime < redTotalTime) winnerText = `이번 술래잡기 게임 승자는 ${bluePlayerName} 입니다.`;
+      overlayText = `게임이 종료되었습니다.\n${winnerText}`;
+      updateHud();
+    }
+
+    function prepareNextRound() {
+      roundNumber += 1;
+      if (roundNumber > TOTAL_ROUNDS) {
+        finishTournament();
+        return;
+      }
+      if (roundNumber === HALF_ROUNDS + 1) {
+        currentTagger = firstTagger === 'red' ? 'blue' : 'red';
+        setupRound();
+        launchPhaseSwitch();
+        return;
+      }
+      setupRound();
+      launchRound(false);
+    }
+
+    function finishRound(caught) {
+      if (!tournamentStarted) return;
+      gameRunning = false;
+      isPaused = false;
+      clearTimersAndPending();
+      const reactionMs = caught ? Math.max(0, Math.round(performance.now() - spawnTimestamp)) : ROUND_TIME * 1000;
+      const result = caught ? `${displayName(currentTagger)} 승리` : `${displayName(currentTagger)} 패배`;
+      addRecord(result, reactionMs);
+      statusText = '라운드 종료';
+      overlayText = caught ? `${displayName(currentTagger)} 승리!` : `${displayName(currentTagger)} 패배!`;
+      updateHud();
+      roundAdvanceTimeout = setTimeout(() => {
+        roundAdvanceTimeout = null;
+        if (!tournamentStarted) return;
+        prepareNextRound();
+      }, 900);
+    }
+
+    function resolvePlayerCollision() {
+      const distance = Math.hypot(bluePlayer.x - redPlayer.x, bluePlayer.y - redPlayer.y);
+      const minDistance = redPlayer.r + bluePlayer.r;
+      if (distance <= minDistance) finishRound(true);
+    }
+
+    function startTournament() {
+      clearTimersAndPending();
+      if (!redNameLocked) {
+        redPlayerName = sanitizePlayerName(redNameInput.value, '빨간공');
+        redNameInput.value = redPlayerName;
+      }
+      if (!blueNameLocked) {
+        bluePlayerName = sanitizePlayerName(blueNameInput.value, '파란공');
+        blueNameInput.value = bluePlayerName;
+      }
+      roundNumber = 1;
+      timeLeft = ROUND_TIME;
+      logs = [];
+      redTotalTime = 0;
+      blueTotalTime = 0;
+      wallEffects = [];
+      lastReactionEl.textContent = '-';
+      firstTagger = Math.random() < 0.5 ? 'red' : 'blue';
+      currentTagger = firstTagger;
+      tournamentStarted = true;
+      renderLogTable();
+      startBtn.disabled = true;
+      setupRound();
+      launchRound(true);
+    }
+
+    function pauseGame() {
+      if (!gameRunning || isPaused) return;
+      gameRunning = false;
+      isPaused = true;
+      clearTimersAndPending();
+      pausedElapsedBeforePause = performance.now() - spawnTimestamp;
+      statusText = '일시정지';
+      overlayText = 'Pause\n게임과 타이머가 일시정지 되었습니다.\n게임을 다시 시작하시려면 R 버튼을 눌러주세요.';
+      updateHud();
+    }
+
+    function resumeGame() {
+      if (!isPaused) return;
+      resetInputs();
+      launchRound(false);
+    }
+
+    function hardReset() {
+      clearTimersAndPending();
+      resetInputs();
+      gameRunning = false;
+      isCountingDown = false;
+      isPaused = false;
+      tournamentStarted = false;
+      roundNumber = 1;
+      timeLeft = ROUND_TIME;
+      logs = [];
+      redTotalTime = 0;
+      blueTotalTime = 0;
+      wallEffects = [];
+      lastReactionEl.textContent = '-';
+      overlayText = '게임 시작 버튼을 누르세요';
+      statusText = '대기 중';
+      firstTagger = Math.random() < 0.5 ? 'red' : 'blue';
+      currentTagger = firstTagger;
+      renderLogTable();
+      placePlayers();
+      unlockPlayerNames();
+      updateHud();
+      startBtn.disabled = false;
+    }
+
+    function gameLoop(now) {
+      const deltaSec = Math.min(0.03, (now - lastFrameTime) / 1000);
+      lastFrameTime = now;
+
+      if (gameRunning) {
+        updateBall(redPlayer, arrowInput, deltaSec);
+        updateBall(bluePlayer, wasdInput, deltaSec);
+        resolvePlayerCollision();
+        reactionTimeEl.textContent = Math.max(0, Math.round(performance.now() - spawnTimestamp));
+      }
+
+      drawFrame();
+      requestAnimationFrame(gameLoop);
+    }
+
+    redNameConfirmBtn.addEventListener('click', () => confirmPlayerName('red'));
+    blueNameConfirmBtn.addEventListener('click', () => confirmPlayerName('blue'));
+
+    redNameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !redNameLocked) {
+        e.preventDefault();
+        confirmPlayerName('red');
+      }
+    });
+    blueNameInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !blueNameLocked) {
+        e.preventDefault();
+        confirmPlayerName('blue');
+      }
+    });
+
+    window.addEventListener('keydown', (e) => {
+      const key = e.key;
+      const lower = key.toLowerCase();
+
+      if (document.activeElement === redNameInput || document.activeElement === blueNameInput) {
+        return;
+      }
+
+      if (lower === 'p') {
+        e.preventDefault();
+        pauseGame();
+        return;
+      }
+      if (lower === 'r' && isPaused) {
+        e.preventDefault();
+        resumeGame();
+        return;
+      }
+
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) e.preventDefault();
+      if (['w', 'a', 's', 'd'].includes(lower)) e.preventDefault();
+
+      if (key === 'ArrowUp') arrowInput.up = true;
+      if (key === 'ArrowDown') arrowInput.down = true;
+      if (key === 'ArrowLeft') arrowInput.left = true;
+      if (key === 'ArrowRight') arrowInput.right = true;
+
+      if (lower === 'w') wasdInput.up = true;
+      if (lower === 's') wasdInput.down = true;
+      if (lower === 'a') wasdInput.left = true;
+      if (lower === 'd') wasdInput.right = true;
+    });
+
+    window.addEventListener('keyup', (e) => {
+      const key = e.key;
+      const lower = key.toLowerCase();
+
+      if (key === 'ArrowUp') arrowInput.up = false;
+      if (key === 'ArrowDown') arrowInput.down = false;
+      if (key === 'ArrowLeft') arrowInput.left = false;
+      if (key === 'ArrowRight') arrowInput.right = false;
+
+      if (lower === 'w') wasdInput.up = false;
+      if (lower === 's') wasdInput.down = false;
+      if (lower === 'a') wasdInput.left = false;
+      if (lower === 'd') wasdInput.right = false;
+    });
+
+    window.addEventListener('blur', resetInputs);
+    canvas.addEventListener('click', () => canvas.focus());
+    startBtn.addEventListener('click', startTournament);
+    resetBtn.addEventListener('click', hardReset);
+
+    redNameInput.value = redPlayerName;
+    blueNameInput.value = bluePlayerName;
+    syncNameLockUi();
+    placePlayers();
+    updateHud();
+    renderLogTable();
+    requestAnimationFrame((now) => {
+      lastFrameTime = now;
+      gameLoop(now);
+    });
+  </script>
+</body>
+</html>
