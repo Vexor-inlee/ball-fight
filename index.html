@@ -424,6 +424,7 @@
     const ROOM_SYNC_CHANNEL = 'ballfight.rooms.sync';
     const SUPABASE_URL = '';
     const SUPABASE_ANON_KEY = '';
+    const REALTIME_SERVER_URL = '';
     const roomSync = 'BroadcastChannel' in window ? new BroadcastChannel(ROOM_SYNC_CHANNEL) : null;
 
     const screens = {
@@ -566,6 +567,25 @@
       refreshRoomViews();
     }
 
+    function realtimeServerBaseUrl() {
+      return REALTIME_SERVER_URL.trim().replace(/\/$/, '');
+    }
+
+    function realtimeHttpUrl(path) {
+      const baseUrl = realtimeServerBaseUrl();
+      return baseUrl ? `${baseUrl}${path}` : path;
+    }
+
+    function realtimeWebSocketUrl(path) {
+      const baseUrl = realtimeServerBaseUrl();
+      if (baseUrl) {
+        const socketBaseUrl = baseUrl.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+        return `${socketBaseUrl}${path}`;
+      }
+      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${protocol}://${location.host}${path}`;
+    }
+
     async function initializeRoomBackend() {
       if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
         await initializeLocalApiBackend();
@@ -591,17 +611,21 @@
 
     async function initializeLocalApiBackend() {
       try {
-        const response = await fetch('/api/rooms', { cache: 'no-store' });
+        const response = await fetch(realtimeHttpUrl('/api/rooms'), { cache: 'no-store' });
         if (!response.ok) throw new Error('local room API unavailable');
         remoteRooms = await response.json();
         localApiRoomsEnabled = true;
         connectLocalApiEvents();
         connectLocalApiSocket();
-        lobbyStatus.textContent = '로컬 멀티 서버에 연결되었습니다. Safari 일반/시크릿과 다른 브라우저 탭이 같은 방 목록을 봅니다.';
+        lobbyStatus.textContent = realtimeServerBaseUrl()
+          ? '온라인 실시간 서버에 연결되었습니다.'
+          : '로컬 멀티 서버에 연결되었습니다. Safari 일반/시크릿과 다른 브라우저 탭이 같은 방 목록을 봅니다.';
         refreshRoomViews();
       } catch {
         localApiRoomsEnabled = false;
-        lobbyStatus.textContent = '브라우저 저장소 모드입니다. Safari 일반/시크릿은 서로 방 목록을 공유하지 않습니다. 로컬 멀티 테스트는 node local-multiplayer-server.mjs로 실행하세요.';
+        lobbyStatus.textContent = realtimeServerBaseUrl()
+          ? '온라인 실시간 서버 연결에 실패했습니다. Render 서버 주소와 배포 상태를 확인하세요.'
+          : '브라우저 저장소 모드입니다. Safari 일반/시크릿은 서로 방 목록을 공유하지 않습니다. 로컬 멀티 테스트는 node local-multiplayer-server.mjs로 실행하세요.';
       } finally {
         remoteRoomsReady = true;
       }
@@ -609,7 +633,7 @@
 
     async function refreshLocalApiRooms() {
       if (!localApiRoomsEnabled) return;
-      const response = await fetch('/api/rooms', { cache: 'no-store' });
+      const response = await fetch(realtimeHttpUrl('/api/rooms'), { cache: 'no-store' });
       if (!response.ok) return;
       remoteRooms = await response.json();
       refreshRoomViews();
@@ -617,7 +641,7 @@
 
     function connectLocalApiEvents() {
       if (!('EventSource' in window) || localApiEvents) return;
-      localApiEvents = new EventSource('/api/rooms/events');
+      localApiEvents = new EventSource(realtimeHttpUrl('/api/rooms/events'));
       localApiEvents.onopen = () => {
         localApiStreamConnected = true;
       };
@@ -639,8 +663,7 @@
 
     function connectLocalApiSocket() {
       if (!('WebSocket' in window) || localApiSocket) return;
-      const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-      localApiSocket = new WebSocket(`${protocol}://${location.host}/ws`);
+      localApiSocket = new WebSocket(realtimeWebSocketUrl('/ws'));
       localApiSocket.addEventListener('open', () => {
         localApiSocketConnected = true;
       });
@@ -678,7 +701,7 @@
         remoteRooms = [room, ...loadRooms()];
         refreshRoomViews();
         if (sendLocalApiSocketMessage({ type: 'upsert-room', room })) return true;
-        const response = await fetch('/api/rooms', {
+        const response = await fetch(realtimeHttpUrl('/api/rooms'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(room),
@@ -707,7 +730,7 @@
         remoteRooms = loadRooms().map(candidate => candidate.id === room.id ? room : candidate);
         refreshRoomViews();
         if (sendLocalApiSocketMessage({ type: 'upsert-room', room })) return true;
-        const response = await fetch(`/api/rooms/${encodeURIComponent(room.id)}`, {
+        const response = await fetch(realtimeHttpUrl(`/api/rooms/${encodeURIComponent(room.id)}`), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(room),
@@ -737,7 +760,7 @@
         remoteRooms = loadRooms().filter(room => room.id !== roomId);
         refreshRoomViews();
         if (sendLocalApiSocketMessage({ type: 'delete-room', roomId })) return true;
-        const response = await fetch(`/api/rooms/${encodeURIComponent(roomId)}`, { method: 'DELETE' });
+        const response = await fetch(realtimeHttpUrl(`/api/rooms/${encodeURIComponent(roomId)}`), { method: 'DELETE' });
         if (!response.ok) {
           roomStatus.textContent = '로컬 서버에 방 삭제 요청이 실패했습니다.';
           return false;
