@@ -51,6 +51,12 @@ function broadcastRooms() {
   }
 }
 
+function broadcastWebSocketMessage(value) {
+  for (const socket of webSocketClients) {
+    sendWebSocketMessage(socket, value);
+  }
+}
+
 function sendWebSocketMessage(socket, value) {
   if (socket.destroyed) return;
   const payload = Buffer.from(JSON.stringify(value));
@@ -133,7 +139,19 @@ function handleWebSocketMessage(socket, text) {
       [message.role]: message.ballState,
     };
     rooms.set(room.id, room);
-    broadcastRooms();
+    broadcastWebSocketMessage({
+      type: 'player-state',
+      roomId: room.id,
+      role: message.role,
+      ballState: message.ballState,
+      gameState: {
+        firstTagger: room.gameState.firstTagger,
+        currentTagger: room.gameState.currentTagger,
+        roundNumber: room.gameState.roundNumber,
+        timeLeft: room.gameState.timeLeft,
+        phase: room.gameState.phase,
+      },
+    });
   }
 }
 

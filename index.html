@@ -515,12 +515,15 @@
     let localApiSocket = null;
     let localApiSocketConnected = false;
     let lastSessionEventKey = '';
+    let lastFinishedRoundKey = '';
+    const remoteBallBuffers = { red: [], blue: [] };
 
     const BASE_RADIUS = 22;
     const BASE_ACCEL = 780;
     const BASE_MAX_SPEED = 340;
     const BASE_FRICTION = 0.985;
     const BASE_BOUNCE = 0.72;
+    const REMOTE_INTERPOLATION_DELAY = 110;
 
     const redPlayer = {
       x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
@@ -671,9 +674,14 @@
       });
       localApiSocket.addEventListener('message', (event) => {
         const message = JSON.parse(event.data);
-        if (message.type !== 'rooms') return;
-        remoteRooms = message.rooms;
-        refreshRoomViews();
+        if (message.type === 'rooms') {
+          remoteRooms = message.rooms;
+          refreshRoomViews();
+          return;
+        }
+        if (message.type === 'player-state') {
+          applyPlayerStateMessage(message);
+        }
       });
       localApiSocket.addEventListener('close', () => {
         localApiSocketConnected = false;
@@ -807,6 +815,72 @@
     function getCurrentPlayerRole(room = getCurrentRoom()) {
       if (!room || !currentPlayer) return null;
       return room.players.find(player => player.id === currentPlayer.id)?.role || null;
+    }
+
+    function isCurrentRoomHost(room = getCurrentRoom()) {
+      return Boolean(room && currentPlayer && room.hostId === currentPlayer.id);
+    }
+
+    function clearRemoteBallBuffers() {
+      remoteBallBuffers.red = [];
+      remoteBallBuffers.blue = [];
+    }
+
+    function pushRemoteBallState(role, state) {
+      if (!state || !remoteBallBuffers[role]) return;
+      const buffer = remoteBallBuffers[role];
+      const last = buffer[buffer.length - 1];
+      if (last && state.sentAt && last.sentAt === state.sentAt) return;
+      buffer.push({ ...state, receivedAt: performance.now() });
+      while (buffer.length > 10) buffer.shift();
+    }
+
+    function sampleRemoteBallState(role) {
+      const buffer = remoteBallBuffers[role];
+      if (!buffer?.length) return null;
+      const renderAt = performance.now() - REMOTE_INTERPOLATION_DELAY;
+      while (buffer.length >= 2 && buffer[1].receivedAt <= renderAt) buffer.shift();
+      if (buffer.length === 1 || renderAt <= buffer[0].receivedAt) return buffer[0];
+      const current = buffer[0];
+      const next = buffer[1];
+      const span = Math.max(1, next.receivedAt - current.receivedAt);
+      const t = clamp((renderAt - current.receivedAt) / span, 0, 1);
+      return {
+        ...next,
+        x: current.x + (next.x - current.x) * t,
+        y: current.y + (next.y - current.y) * t,
+        vx: current.vx + ((next.vx || 0) - (current.vx || 0)) * t,
+        vy: current.vy + ((next.vy || 0) - (current.vy || 0)) * t,
+        holdTime: current.holdTime + ((next.holdTime || 0) - (current.holdTime || 0)) * t,
+      };
+    }
+
+    function applyBufferedRemoteBallStates() {
+      const localRole = getCurrentPlayerRole();
+      if (localRole !== 'blue') {
+        applyBallState(bluePlayer, sampleRemoteBallState('blue'));
+      }
+      if (localRole !== 'red') {
+        applyBallState(redPlayer, sampleRemoteBallState('red'));
+      }
+    }
+
+    function applyPlayerStateMessage(message) {
+      remoteRooms = loadRooms().map(room => {
+        if (room.id !== message.roomId) return room;
+        return {
+          ...room,
+          gameState: {
+            ...(room.gameState || {}),
+            ...(message.gameState || {}),
+            [message.role]: message.ballState,
+          },
+        };
+      });
+      const room = getCurrentRoom();
+      const localRole = getCurrentPlayerRole(room);
+      if (message.role !== localRole) pushRemoteBallState(message.role, message.ballState);
+      if (screens.game.classList.contains('active')) syncRemoteGameState();
     }
 
     function updateRoom(nextRoom) {
@@ -1141,11 +1215,15 @@
       if (room.gameState.currentTagger) currentTagger = room.gameState.currentTagger;
       if (room.gameState.roundNumber) roundNumber = room.gameState.roundNumber;
       if (room.gameState.timeLeft !== undefined) timeLeft = room.gameState.timeLeft;
-      if (includeLocal || localRole !== 'blue') {
-        applyBallState(bluePlayer, room.gameState.blue, { smooth: !includeLocal });
+      if (includeLocal) {
+        applyBallState(bluePlayer, room.gameState.blue);
+      } else if (localRole !== 'blue') {
+        pushRemoteBallState('blue', room.gameState.blue);
       }
-      if (includeLocal || localRole !== 'red') {
-        applyBallState(redPlayer, room.gameState.red, { smooth: !includeLocal });
+      if (includeLocal) {
+        applyBallState(redPlayer, room.gameState.red);
+      } else if (localRole !== 'red') {
+        pushRemoteBallState('red', room.gameState.red);
       }
       updateHud();
     }
@@ -1179,6 +1257,7 @@
       const eventKey = [
         phase,
         state.countdownStartedAt,
+        state.roundEndedAt,
         state.pausedAt,
         state.resetAt,
         state.endedAt,
@@ -1212,6 +1291,19 @@
           updateHud();
           startMainTimer();
         }
+        return;
+      }
+
+      if (phase === 'roundEnded') {
+        clearTimersAndPending();
+        resetInputs();
+        gameRunning = false;
+        isPaused = false;
+        isCountingDown = false;
+        statusText = '라운드 종료';
+        overlayText = state.roundResultText || '라운드 종료';
+        updateHud();
+        scheduleNextRoundAdvance();
         return;
       }
 
@@ -1565,6 +1657,7 @@
     function setupRound() {
       timeLeft = ROUND_TIME;
       pausedElapsedBeforePause = 0;
+      clearRemoteBallBuffers();
       resetInputs();
       placePlayers();
       updateHud();
@@ -1638,24 +1731,59 @@
       updateHud();
     }
 
-    function prepareNextRound() {
+    function scheduleNextRoundAdvance() {
+      if (!isCurrentRoomHost() || roundAdvanceTimeout) return;
+      roundAdvanceTimeout = setTimeout(() => {
+        roundAdvanceTimeout = null;
+        prepareNextRound();
+      }, 1200);
+    }
+
+    async function publishCountdownState(messages) {
+      const room = getCurrentRoom();
+      if (!room) return;
+      const snapshot = createGameStateSnapshot();
+      await persistUpdatedRoom({
+        ...room,
+        status: 'playing',
+        gameState: {
+          ...(room.gameState || {}),
+          ...snapshot,
+          phase: 'countdown',
+          countdownStartedAt: Date.now(),
+          roundIntro: messages,
+        },
+      });
+    }
+
+    async function prepareNextRound() {
+      if (!isCurrentRoomHost()) return;
       roundNumber += 1;
       if (roundNumber > TOTAL_ROUNDS) {
         finishTournament();
+        await publishSessionState({
+          status: 'ended',
+          phase: 'ended',
+          endedAt: Date.now(),
+          endedReason: overlayText,
+        });
         return;
       }
       if (roundNumber === HALF_ROUNDS + 1) {
         currentTagger = firstTagger === 'red' ? 'blue' : 'red';
         setupRound();
-        launchPhaseSwitch();
+        await publishCountdownState([`이번 술래는 ${displayName(currentTagger)}입니다.`, '3', '2', '1', 'Start!']);
         return;
       }
       setupRound();
-      launchRound(false);
+      await publishCountdownState(['3', '2', '1', 'Start!']);
     }
 
-    function finishRound(caught) {
-      if (!tournamentStarted) return;
+    async function finishRound(caught) {
+      if (!tournamentStarted || !isCurrentRoomHost()) return;
+      const roundKey = `${currentRoomId}:${roundNumber}`;
+      if (lastFinishedRoundKey === roundKey) return;
+      lastFinishedRoundKey = roundKey;
       gameRunning = false;
       isPaused = false;
       clearTimersAndPending();
@@ -1667,11 +1795,18 @@
       statusText = '라운드 종료';
       overlayText = caught ? `${displayName(currentTagger)} 승리!` : `${displayName(currentTagger)} 패배!`;
       updateHud();
-      roundAdvanceTimeout = setTimeout(() => {
-        roundAdvanceTimeout = null;
-        if (!tournamentStarted) return;
-        prepareNextRound();
-      }, 900);
+      await publishSessionState({
+        phase: 'roundEnded',
+        roundEndedAt: Date.now(),
+        roundResultText: overlayText,
+        roundResult: result,
+        roundReactionMs: reactionMs,
+        roundNumber,
+        firstTagger,
+        currentTagger,
+        timeLeft,
+      });
+      scheduleNextRoundAdvance();
     }
 
     function resolvePlayerCollision() {
@@ -1702,6 +1837,7 @@
       redTotalTime = 0;
       blueTotalTime = 0;
       wallEffects = [];
+      clearRemoteBallBuffers();
       lastReactionEl.textContent = '-';
       tournamentStarted = true;
       gameRunning = false;
@@ -1786,8 +1922,9 @@
         }
         maybeRefreshGameRooms();
         syncRemoteGameState();
+        applyBufferedRemoteBallStates();
         publishLocalBallState();
-        resolvePlayerCollision();
+        if (isCurrentRoomHost()) resolvePlayerCollision();
         reactionTimeEl.textContent = Math.max(0, Math.round(performance.now() - spawnTimestamp));
       }
       drawFrame();
