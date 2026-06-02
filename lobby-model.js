@@ -42,6 +42,22 @@ export function joinRoom(room, player, password) {
 }
 
 export function leaveRoom(room, playerId) {
+  if (room.status === 'playing') {
+    const players = room.players.filter(player => player.id !== playerId);
+    if (!players.length) return null;
+    return {
+      ...room,
+      status: 'ended',
+      hostId: players[0].id,
+      players,
+      gameState: {
+        ...(room.gameState || {}),
+        phase: 'ended',
+        endedReason: '상대가 방에서 나갔습니다.\n게임이 종료되었습니다.',
+        endedAt: Date.now(),
+      },
+    };
+  }
   if (room.hostId === playerId) return null;
   const players = room.players.filter(player => player.id !== playerId);
   if (!players.length) return null;
@@ -61,15 +77,45 @@ export function startRoom(room, gameState) {
   return {
     ...room,
     status: 'playing',
-    gameState,
+    gameState: {
+      ...gameState,
+      phase: gameState.phase || 'countdown',
+    },
   };
 }
 
-export function updatePlayerGameState(room, role, ballState) {
+export function resetRoomGame(room) {
+  return {
+    ...room,
+    status: 'waiting',
+    players: room.players.map(player => ({ ...player, ready: false })),
+    gameState: {
+      ...(room.gameState || {}),
+      phase: 'reset',
+      resetAt: Date.now(),
+    },
+  };
+}
+
+export function endRoomGame(room, endedReason) {
+  return {
+    ...room,
+    status: 'ended',
+    gameState: {
+      ...(room.gameState || {}),
+      phase: 'ended',
+      endedReason,
+      endedAt: Date.now(),
+    },
+  };
+}
+
+export function updatePlayerGameState(room, role, ballState, sessionState = {}) {
   return {
     ...room,
     gameState: {
       ...(room.gameState || {}),
+      ...sessionState,
       [role]: {
         ...((room.gameState || {})[role] || {}),
         ...ballState,

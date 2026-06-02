@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   createRoom,
+  endRoomGame,
   joinRoom,
   leaveRoom,
   roomFromRow,
@@ -9,6 +10,7 @@ import {
   sanitizeRoomTitle,
   setPlayerReady,
   startRoom,
+  resetRoomGame,
   updatePlayerGameState,
 } from './lobby-model.js';
 
@@ -42,11 +44,25 @@ const initialGameState = {
 };
 const startedRoom = startRoom(joinedOpenRoom, initialGameState);
 assert.equal(startedRoom.status, 'playing');
-assert.deepEqual(startedRoom.gameState, initialGameState);
+assert.deepEqual(startedRoom.gameState, { ...initialGameState, phase: 'countdown' });
 
 const blueMovedRoom = updatePlayerGameState(startedRoom, 'blue', { x: 140, y: 110, vx: 1, vy: 2 });
 assert.equal(blueMovedRoom.gameState.blue.x, 140);
 assert.equal(blueMovedRoom.gameState.red.x, 620);
+
+const pausedRoom = updatePlayerGameState(startedRoom, 'blue', { x: 150 }, { phase: 'paused', pausedBy: 'Host' });
+assert.equal(pausedRoom.gameState.phase, 'paused');
+assert.equal(pausedRoom.gameState.pausedBy, 'Host');
+
+const resetRoom = resetRoomGame(startedRoom);
+assert.equal(resetRoom.status, 'waiting');
+assert.equal(resetRoom.gameState.phase, 'reset');
+assert.equal(resetRoom.players.every(player => !player.ready), true);
+
+const endedRoom = endRoomGame(startedRoom, '상대가 방에서 나갔습니다.');
+assert.equal(endedRoom.status, 'ended');
+assert.equal(endedRoom.gameState.phase, 'ended');
+assert.equal(endedRoom.gameState.endedReason, '상대가 방에서 나갔습니다.');
 
 const lockedRoom = createRoom({ title: 'Locked', password: '1234', host });
 assert.equal(lockedRoom.hasPassword, true);
@@ -60,6 +76,11 @@ assert.equal(leaveRoom(openRoom, host.id), null);
 const guestLeftRoom = leaveRoom(joinedOpenRoom, guest.id);
 assert.equal(guestLeftRoom.players.length, 1);
 assert.equal(guestLeftRoom.players[0].id, host.id);
+
+const guestLeftPlayingRoom = leaveRoom(startedRoom, guest.id);
+assert.equal(guestLeftPlayingRoom.status, 'ended');
+assert.equal(guestLeftPlayingRoom.players.length, 1);
+assert.equal(guestLeftPlayingRoom.gameState.phase, 'ended');
 
 const row = roomToRow(openRoom);
 assert.equal(row.has_password, false);

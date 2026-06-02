@@ -408,6 +408,7 @@
       createRoom,
       joinRoom,
       leaveRoom as leaveRoomModel,
+      resetRoomGame,
       roomFromRow,
       roomToRow,
       sanitizeNickname,
@@ -513,6 +514,7 @@
     let localApiEvents = null;
     let localApiSocket = null;
     let localApiSocketConnected = false;
+    let lastSessionEventKey = '';
 
     const BASE_RADIUS = 22;
     const BASE_ACCEL = 780;
@@ -1081,6 +1083,7 @@
         vx: ball.vx,
         vy: ball.vy,
         holdTime: ball.holdTime || 0,
+        sentAt: Date.now(),
       };
     }
 
@@ -1091,19 +1094,40 @@
         currentTagger,
         roundNumber,
         timeLeft,
+        phase: 'countdown',
+        countdownStartedAt: Date.now(),
+        roundIntro: [`술래는 ${displayName(currentTagger)} 입니다.`, '3', '2', '1', 'Start!'],
         blue: captureBallState(bluePlayer),
         red: captureBallState(redPlayer),
       };
     }
 
+    async function publishSessionState(sessionState) {
+      const room = getCurrentRoom();
+      if (!room) return false;
+      return persistUpdatedRoom({
+        ...room,
+        status: sessionState.status || room.status,
+        gameState: {
+          ...(room.gameState || {}),
+          ...sessionState,
+        },
+      });
+    }
+
     function applyBallState(ball, state, { smooth = false } = {}) {
       if (!state) return;
+      const latencySec = Math.min(0.12, Math.max(0, Date.now() - (state.sentAt || Date.now())) / 1000);
+      const targetX = state.x + (state.vx || 0) * latencySec;
+      const targetY = state.y + (state.vy || 0) * latencySec;
       if (smooth) {
-        ball.x += (state.x - ball.x) * 0.55;
-        ball.y += (state.y - ball.y) * 0.55;
+        const distance = Math.hypot(targetX - ball.x, targetY - ball.y);
+        const follow = distance > 160 ? 0.72 : 0.24;
+        ball.x += (targetX - ball.x) * follow;
+        ball.y += (targetY - ball.y) * follow;
       } else {
-        ball.x = state.x;
-        ball.y = state.y;
+        ball.x = targetX;
+        ball.y = targetY;
       }
       ball.vx = state.vx || 0;
       ball.vy = state.vy || 0;
@@ -1113,6 +1137,7 @@
     function applyGameState(room, { includeLocal = false } = {}) {
       if (!room?.gameState) return;
       const localRole = getCurrentPlayerRole(room);
+      applySessionPhase(room);
       if (room.gameState.firstTagger) firstTagger = room.gameState.firstTagger;
       if (room.gameState.currentTagger) currentTagger = room.gameState.currentTagger;
       if (room.gameState.roundNumber) roundNumber = room.gameState.roundNumber;
@@ -1126,6 +1151,105 @@
       updateHud();
     }
 
+    function startSyncedCountdown(messages, startedAt, onComplete) {
+      clearTimersAndPending();
+      resetInputs();
+      gameRunning = false;
+      isPaused = false;
+      isCountingDown = true;
+      statusText = '카운트다운';
+      const updateCountdownOverlay = () => {
+        const elapsed = Math.max(0, Date.now() - startedAt);
+        const index = Math.floor(elapsed / 1000);
+        if (index < messages.length) {
+          overlayText = messages[index];
+          updateHud();
+          return;
+        }
+        clearTimersAndPending();
+        isCountingDown = false;
+        onComplete();
+      };
+      updateCountdownOverlay();
+      countdownTimerId = setInterval(updateCountdownOverlay, 100);
+    }
+
+    function applySessionPhase(room, { force = false } = {}) {
+      const state = room.gameState || {};
+      const phase = state.phase || (room.status === 'playing' ? 'playing' : room.status);
+      const eventKey = [
+        phase,
+        state.countdownStartedAt,
+        state.pausedAt,
+        state.resetAt,
+        state.endedAt,
+        state.startedAt,
+      ].filter(Boolean).join(':');
+      if (!force && eventKey && eventKey === lastSessionEventKey) return;
+      if (eventKey) lastSessionEventKey = eventKey;
+
+      if (phase === 'countdown') {
+        const messages = state.roundIntro || [`술래는 ${displayName(state.currentTagger || currentTagger)} 입니다.`, '3', '2', '1', 'Start!'];
+        startSyncedCountdown(messages, state.countdownStartedAt || Date.now(), () => {
+          overlayText = '';
+          gameRunning = true;
+          isPaused = false;
+          statusText = '진행 중';
+          spawnTimestamp = performance.now() - (state.pausedElapsedBeforePause || 0);
+          updateHud();
+          startMainTimer();
+        });
+        return;
+      }
+
+      if (phase === 'playing') {
+        if (!gameRunning || isPaused || isCountingDown) {
+          clearTimersAndPending();
+          overlayText = '';
+          gameRunning = true;
+          isPaused = false;
+          isCountingDown = false;
+          statusText = '진행 중';
+          updateHud();
+          startMainTimer();
+        }
+        return;
+      }
+
+      if (phase === 'paused') {
+        clearTimersAndPending();
+        resetInputs();
+        gameRunning = false;
+        isPaused = true;
+        isCountingDown = false;
+        pausedElapsedBeforePause = state.pausedElapsedBeforePause || pausedElapsedBeforePause;
+        statusText = '일시정지';
+        overlayText = `Pause\n${state.pausedBy || '플레이어'}님이 게임을 일시정지했습니다.\nR 키로 함께 재개할 수 있습니다.`;
+        updateHud();
+        return;
+      }
+
+      if (phase === 'reset') {
+        hardReset();
+        currentRoomId = room.id;
+        showScreen('room');
+        roomStatus.textContent = '게임이 Reset되었습니다. 다시 Ready 후 시작하세요.';
+        return;
+      }
+
+      if (phase === 'ended') {
+        clearTimersAndPending();
+        resetInputs();
+        gameRunning = false;
+        isPaused = false;
+        isCountingDown = false;
+        tournamentStarted = false;
+        statusText = '종료';
+        overlayText = state.endedReason || '게임이 종료되었습니다.';
+        updateHud();
+      }
+    }
+
     function enterStartedGameFromRoom(room) {
       if (activeGameRoomId === room.id && screens.game.classList.contains('active')) return;
       applyRoomPlayersToGame(room);
@@ -1133,9 +1257,9 @@
       activeGameRoomId = room.id;
       currentRoomId = room.id;
       tournamentStarted = true;
-      gameRunning = true;
+      gameRunning = false;
       isPaused = false;
-      statusText = '진행 중';
+      statusText = '카운트다운';
       overlayText = '';
       spawnTimestamp = performance.now();
       if (room.gameState) {
@@ -1144,12 +1268,23 @@
         setupRound();
       }
       showScreen('game');
+      applySessionPhase(room, { force: true });
       updateHud();
     }
 
     function syncRemoteGameState() {
       const room = getCurrentRoom();
-      if (!room || room.status !== 'playing') return;
+      if (!room) return;
+      if (room.status === 'waiting' && room.gameState?.phase === 'reset') {
+        applySessionPhase(room);
+        return;
+      }
+      if (room.status === 'ended' || room.gameState?.phase === 'ended') {
+        if (!screens.game.classList.contains('active')) showScreen('game');
+        applySessionPhase(room);
+        return;
+      }
+      if (room.status !== 'playing') return;
       if (!screens.game.classList.contains('active')) {
         enterStartedGameFromRoom(room);
         return;
@@ -1172,7 +1307,7 @@
         roomId: room.id,
         role,
         ballState,
-        gameState: { firstTagger, currentTagger, roundNumber, timeLeft },
+        gameState: { firstTagger, currentTagger, roundNumber, timeLeft, phase: gameRunning ? 'playing' : (isPaused ? 'paused' : undefined) },
       })) {
         remoteRooms = loadRooms().map(candidate => {
           if (candidate.id !== room.id) return candidate;
@@ -1185,6 +1320,7 @@
               currentTagger,
               roundNumber,
               timeLeft,
+              phase: gameRunning ? 'playing' : (isPaused ? 'paused' : updatedRoom.gameState.phase),
             },
           };
         });
@@ -1199,6 +1335,7 @@
           currentTagger,
           roundNumber,
           timeLeft,
+          phase: gameRunning ? 'playing' : (isPaused ? 'paused' : withBallState.gameState.phase),
         },
       });
     }
@@ -1570,8 +1707,8 @@
       wallEffects = [];
       lastReactionEl.textContent = '-';
       tournamentStarted = true;
-      gameRunning = true;
-      statusText = '진행 중';
+      gameRunning = false;
+      statusText = '카운트다운';
       overlayText = '';
       renderLogTable();
       setupInitialRoundForHost();
@@ -1580,24 +1717,37 @@
       if (!saved) return;
       activeGameRoomId = room.id;
       showScreen('game');
-      launchRound(true);
+      applySessionPhase(startedRoom, { force: true });
     }
 
-    function pauseGame() {
+    async function pauseGame() {
       if (!gameRunning || isPaused) return;
-      gameRunning = false;
-      isPaused = true;
-      clearTimersAndPending();
-      pausedElapsedBeforePause = performance.now() - spawnTimestamp;
-      statusText = '일시정지';
-      overlayText = 'Pause\n게임과 타이머가 일시정지 되었습니다.\n게임을 다시 시작하시려면 R 버튼을 눌러주세요.';
-      updateHud();
+      const elapsed = performance.now() - spawnTimestamp;
+      await publishSessionState({
+        phase: 'paused',
+        pausedAt: Date.now(),
+        pausedBy: currentPlayer?.nickname || '플레이어',
+        pausedElapsedBeforePause: elapsed,
+      });
     }
 
-    function resumeGame() {
+    async function resumeGame() {
       if (!isPaused) return;
-      resetInputs();
-      launchRound(false);
+      await publishSessionState({
+        phase: 'countdown',
+        countdownStartedAt: Date.now(),
+        roundIntro: ['3', '2', '1', 'Start!'],
+        pausedElapsedBeforePause,
+      });
+    }
+
+    async function requestGameReset() {
+      const room = getCurrentRoom();
+      if (!room || room.status !== 'playing') {
+        hardReset();
+        return;
+      }
+      await persistUpdatedRoom(resetRoomGame(room));
     }
 
     function hardReset() {
@@ -1623,9 +1773,8 @@
       updateHud();
     }
 
-    function backToRoom() {
-      hardReset();
-      showScreen('room');
+    async function backToRoom() {
+      await leaveRoom();
     }
 
     function gameLoop(now) {
@@ -1664,7 +1813,7 @@
     readyBtn.addEventListener('click', toggleReady);
     startRoomGameBtn.addEventListener('click', startTournamentFromRoom);
     leaveRoomBtn.addEventListener('click', leaveRoom);
-    resetBtn.addEventListener('click', hardReset);
+    resetBtn.addEventListener('click', requestGameReset);
     backToRoomBtn.addEventListener('click', backToRoom);
     document.addEventListener('click', (event) => {
       const button = event.target.closest('button');
