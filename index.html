@@ -516,6 +516,7 @@
     let localApiSocketConnected = false;
     let lastSessionEventKey = '';
     let lastFinishedRoundKey = '';
+    let lastAppliedRoundResultKey = '';
     const remoteBallBuffers = { red: [], blue: [] };
 
     const BASE_RADIUS = 22;
@@ -523,7 +524,7 @@
     const BASE_MAX_SPEED = 340;
     const BASE_FRICTION = 0.985;
     const BASE_BOUNCE = 0.72;
-    const REMOTE_INTERPOLATION_DELAY = 110;
+    const REMOTE_INTERPOLATION_DELAY = 60;
 
     const redPlayer = {
       x: 0, y: 0, r: BASE_RADIUS, vx: 0, vy: 0,
@@ -1210,11 +1211,11 @@
     function applyGameState(room, { includeLocal = false } = {}) {
       if (!room?.gameState) return;
       const localRole = getCurrentPlayerRole(room);
-      applySessionPhase(room);
       if (room.gameState.firstTagger) firstTagger = room.gameState.firstTagger;
       if (room.gameState.currentTagger) currentTagger = room.gameState.currentTagger;
       if (room.gameState.roundNumber) roundNumber = room.gameState.roundNumber;
       if (room.gameState.timeLeft !== undefined) timeLeft = room.gameState.timeLeft;
+      applySessionPhase(room);
       if (includeLocal) {
         applyBallState(bluePlayer, room.gameState.blue);
       } else if (localRole !== 'blue') {
@@ -1302,6 +1303,11 @@
         isCountingDown = false;
         statusText = '라운드 종료';
         overlayText = state.roundResultText || '라운드 종료';
+        const resultKey = `${room.id}:${state.roundNumber}:${state.roundEndedAt}`;
+        if (state.roundResult && state.roundReactionMs !== undefined && lastAppliedRoundResultKey !== resultKey) {
+          lastAppliedRoundResultKey = resultKey;
+          addRecord(state.roundResult, state.roundReactionMs);
+        }
         updateHud();
         scheduleNextRoundAdvance();
         return;
@@ -1385,7 +1391,7 @@
 
     async function publishLocalBallState() {
       const now = performance.now();
-      const publishInterval = localApiSocketConnected ? 33 : 70;
+      const publishInterval = localApiSocketConnected ? 25 : 70;
       if (now - lastGameStatePublishAt < publishInterval) return;
       lastGameStatePublishAt = now;
       const room = getCurrentRoom();
@@ -1780,7 +1786,11 @@
     }
 
     async function finishRound(caught) {
-      if (!tournamentStarted || !isCurrentRoomHost()) return;
+      const localRole = getCurrentPlayerRole();
+      const canFinishRound = caught
+        ? localRole && localRole !== currentTagger
+        : isCurrentRoomHost();
+      if (!tournamentStarted || !canFinishRound) return;
       const roundKey = `${currentRoomId}:${roundNumber}`;
       if (lastFinishedRoundKey === roundKey) return;
       lastFinishedRoundKey = roundKey;
@@ -1795,9 +1805,11 @@
       statusText = '라운드 종료';
       overlayText = caught ? `${displayName(currentTagger)} 승리!` : `${displayName(currentTagger)} 패배!`;
       updateHud();
+      const roundEndedAt = Date.now();
+      lastAppliedRoundResultKey = `${currentRoomId}:${roundNumber}:${roundEndedAt}`;
       await publishSessionState({
         phase: 'roundEnded',
-        roundEndedAt: Date.now(),
+        roundEndedAt,
         roundResultText: overlayText,
         roundResult: result,
         roundReactionMs: reactionMs,
@@ -1924,7 +1936,7 @@
         syncRemoteGameState();
         applyBufferedRemoteBallStates();
         publishLocalBallState();
-        if (isCurrentRoomHost()) resolvePlayerCollision();
+        if (localRole && localRole !== currentTagger) resolvePlayerCollision();
         reactionTimeEl.textContent = Math.max(0, Math.round(performance.now() - spawnTimestamp));
       }
       drawFrame();
