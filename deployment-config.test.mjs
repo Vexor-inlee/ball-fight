@@ -9,5 +9,6 @@ assert.match(indexHtml, /function realtimeHttpUrl/);
 assert.match(indexHtml, /function realtimeWebSocketUrl/);
 assert.match(serverSource, /Access-Control-Allow-Origin/);
 assert.match(serverSource, /request\.method === 'OPTIONS'/);
+assert.doesNotMatch(serverSource, /\.\.\.\(message\.gameState \|\| \{\}\)/);
 
 console.log('deployment config tests passed');

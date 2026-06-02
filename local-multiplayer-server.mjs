@@ -126,7 +126,10 @@ function handleWebSocketMessage(socket, text) {
     if (!room || room.status !== 'playing') return;
     room.gameState = {
       ...(room.gameState || {}),
-      ...(message.gameState || {}),
+      firstTagger: message.gameState?.firstTagger ?? room.gameState?.firstTagger,
+      currentTagger: message.gameState?.currentTagger ?? room.gameState?.currentTagger,
+      roundNumber: message.gameState?.roundNumber ?? room.gameState?.roundNumber,
+      timeLeft: message.gameState?.timeLeft ?? room.gameState?.timeLeft,
       [message.role]: message.ballState,
     };
     rooms.set(room.id, room);
