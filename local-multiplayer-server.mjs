@@ -8,6 +8,7 @@ const root = process.cwd();
 const rooms = new Map();
 const eventClients = new Set();
 const webSocketClients = new Set();
+const allowedOrigin = process.env.ALLOWED_ORIGIN || '*';
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -18,8 +19,17 @@ const mimeTypes = {
   '.sql': 'text/plain; charset=utf-8',
 };
 
+function corsHeaders() {
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+}
+
 function sendJson(response, status, value) {
   response.writeHead(status, {
+    ...corsHeaders(),
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
   });
@@ -147,6 +157,7 @@ async function handleApi(request, response, url) {
 
   if (url.pathname === '/api/rooms/events' && request.method === 'GET') {
     response.writeHead(200, {
+      ...corsHeaders(),
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-store',
       Connection: 'keep-alive',
@@ -211,6 +222,14 @@ async function serveStatic(request, response, url) {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || '/', `http://${request.headers.host}`);
   try {
+    if (request.method === 'OPTIONS') {
+      response.writeHead(204, {
+        ...corsHeaders(),
+        'Cache-Control': 'no-store',
+      });
+      response.end();
+      return;
+    }
     if (url.pathname.startsWith('/api/')) {
       await handleApi(request, response, url);
     } else {
